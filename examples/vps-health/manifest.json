@@ -1,0 +1,224 @@
+{
+  "schema_version": "1",
+  "name": "vps-health",
+  "version": 1,
+  "description": "Inspect remote VPS load, memory, disk, systemd services, and optional HTTP health",
+  "tags": ["ops", "ssh", "health", "vps"],
+  "read_only": true,
+  "timeout_ms": 20000,
+  "secrets": [
+    {
+      "name": "VPS_SSH_KEY_PATH",
+      "required": true,
+      "description": "Filesystem path to the SSH private key on the host"
+    },
+    {
+      "name": "VPS_HEALTH_TOKEN",
+      "required": false,
+      "description": "Optional bearer token sent to the HTTPS health endpoint"
+    }
+  ],
+  "capabilities": {
+    "exec": {
+      "templates": [
+        {
+          "id": "ssh-system-metrics",
+          "program": "ssh",
+          "args": [
+            "-i",
+            "${secret:VPS_SSH_KEY_PATH}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-p",
+            "${arg:port}",
+            "${arg:user}@${arg:host}",
+            "uname -srm && uptime && free -m && df -P /"
+          ],
+          "args_schema": {
+            "port": {
+              "pattern": "^[0-9]{1,5}$",
+              "max_length": 5,
+              "description": "SSH TCP port"
+            },
+            "user": {
+              "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+              "max_length": 32,
+              "description": "SSH login user"
+            },
+            "host": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$",
+              "max_length": 253,
+              "description": "Target hostname or IPv4 address"
+            }
+          },
+          "read_only": true,
+          "description": "Collect kernel, uptime, memory, and root filesystem metrics over SSH"
+        },
+        {
+          "id": "ssh-service-status",
+          "program": "ssh",
+          "args": [
+            "-i",
+            "${secret:VPS_SSH_KEY_PATH}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-p",
+            "${arg:port}",
+            "${arg:user}@${arg:host}",
+            "systemctl",
+            "is-active",
+            "--",
+            "${arg:service}"
+          ],
+          "args_schema": {
+            "port": {
+              "pattern": "^[0-9]{1,5}$",
+              "max_length": 5,
+              "description": "SSH TCP port"
+            },
+            "user": {
+              "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+              "max_length": 32,
+              "description": "SSH login user"
+            },
+            "host": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$",
+              "max_length": 253,
+              "description": "Target hostname or IPv4 address"
+            },
+            "service": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,63}$",
+              "max_length": 64,
+              "description": "Systemd unit name"
+            }
+          },
+          "read_only": true,
+          "description": "Query systemd unit active state over SSH"
+        }
+      ]
+    },
+    "http": {
+      "allow": [
+        {
+          "domain": "status.example.com",
+          "methods": ["GET"],
+          "path_prefixes": ["/healthz", "/readyz"],
+          "secrets": ["VPS_HEALTH_TOKEN"]
+        }
+      ]
+    }
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["host", "user"],
+    "properties": {
+      "host": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$",
+        "description": "Remote VPS hostname or IPv4 address."
+      },
+      "user": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+        "description": "SSH login username."
+      },
+      "port": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 22,
+        "description": "SSH TCP port."
+      },
+      "services": {
+        "type": "array",
+        "maxItems": 16,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,63}$"
+        },
+        "description": "Systemd service names to verify."
+      },
+      "check_http_url": {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 256,
+        "pattern": "^https://status\\.example\\.com/(healthz|readyz)(\\?.*)?$",
+        "description": "Optional allowlisted HTTPS health endpoint URL."
+      },
+      "disk_warn_pct": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 99,
+        "default": 85,
+        "description": "Root disk percentage threshold that triggers a warning."
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "host",
+      "healthy",
+      "kernel",
+      "load_1m",
+      "memory_used_pct",
+      "disk_used_pct",
+      "services",
+      "http_check",
+      "warnings"
+    ],
+    "properties": {
+      "host": { "type": "string" },
+      "healthy": { "type": "boolean" },
+      "kernel": { "type": "string" },
+      "load_1m": { "type": "number", "minimum": 0 },
+      "memory_used_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+      "disk_used_pct": { "type": "integer", "minimum": 0, "maximum": 100 },
+      "services": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "active", "state"],
+          "properties": {
+            "name": { "type": "string" },
+            "active": { "type": "boolean" },
+            "state": { "type": "string" }
+          }
+        }
+      },
+      "http_check": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": ["url", "status", "ok"],
+        "properties": {
+          "url": { "type": "string" },
+          "status": { "type": "integer" },
+          "ok": { "type": "boolean" }
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  }
+}
