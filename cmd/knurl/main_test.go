@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,7 +170,7 @@ func TestRunSubcommandEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("decode --json envelope: %v\n%s", err, stdout.String())
 	}
-	if !env.OK || env.Tool != "repo-context" || env.Version != 1 {
+	if !env.OK || env.Tool != "repo-context" || env.Version != 1 || env.Scope != contract.ScopeOverride {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
 
@@ -223,5 +224,159 @@ func TestRunSubcommandEndToEnd(t *testing.T) {
 	}
 	if mcpBadCode := run([]string{"mcp", "--bogus"}, &stdout, &stderr); mcpBadCode != 2 {
 		t.Fatalf("mcp --bogus code=%d, want 2", mcpBadCode)
+	}
+}
+
+func writeCLIVersionedTool(t *testing.T, toolsDir, name string, ver int, tier string) {
+	t.Helper()
+	verDir := filepath.Join(toolsDir, name, fmt.Sprintf("v%d", ver))
+	if err := os.MkdirAll(verDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", verDir, err)
+	}
+	manifest := fmt.Sprintf(`{
+  "schema_version": "1",
+  "name": %q,
+  "version": %d,
+  "description": "CLI two-tier registry test tool",
+  "read_only": true,
+  "input_schema": {"type": "object", "additionalProperties": false},
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["tier", "ver"],
+    "properties": {
+      "tier": {"type": "string"},
+      "ver": {"type": "integer"}
+    }
+  },
+  "capabilities": {}
+}`, name, ver)
+	if err := os.WriteFile(filepath.Join(verDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	src := fmt.Sprintf(`function main() { return { tier: %q, ver: %d }; }`, tier, ver)
+	if err := os.WriteFile(filepath.Join(verDir, "tool.js"), []byte(src), 0o600); err != nil {
+		t.Fatalf("write tool.js: %v", err)
+	}
+}
+
+func TestRunTwoTierRegistryScopeVersionAndDirectPath(t *testing.T) {
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, "repo")
+	workDir := filepath.Join(repoRoot, "sub", "dir")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workDir: %v", err)
+	}
+
+	repoTools := filepath.Join(repoRoot, ".knurl", "tools")
+	globalHome := filepath.Join(root, "knurl-home")
+	globalTools := filepath.Join(globalHome, "tools")
+
+	writeCLIVersionedTool(t, repoTools, "cli-dual", 1, "repo")
+	writeCLIVersionedTool(t, repoTools, "cli-dual", 2, "repo")
+	if err := os.WriteFile(filepath.Join(repoTools, "cli-dual", "active.json"), []byte(`{"active_version":2,"previous_version":1,"updated_at":"2026-11-19T12:00:00Z"}`), 0o600); err != nil {
+		t.Fatalf("write active.json: %v", err)
+	}
+	writeCLIVersionedTool(t, globalTools, "cli-dual", 1, "global")
+	writeCLIVersionedTool(t, globalTools, "global-tool", 1, "global")
+
+	t.Setenv("KNURL_HOME", globalHome)
+	t.Setenv("KNURL_TOOLS_DIR", "")
+
+	// 1. Default two-tier auto resolution: repo-local v2 shadows global.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "cli-dual", "--workdir", workDir, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run cli-dual failed: code=%d stderr=%s", code, stderr.String())
+	}
+	var env contract.ExecutionResult
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	if !env.OK || env.Scope != contract.ScopeRepo || env.Version != 2 || env.Output["tier"] != "repo" {
+		t.Fatalf("unexpected auto envelope: %+v", env)
+	}
+
+	// 2. Explicit --version 1 and --version=v2.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"run", "cli-dual", "--workdir", workDir, "--version", "1", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run --version 1 failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode v1 JSON: %v", err)
+	}
+	if env.Version != 1 || env.Output["ver"] != float64(1) {
+		t.Fatalf("unexpected --version 1 envelope: %+v", env)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"run", "cli-dual", "--workdir", workDir, "--version=v2", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run --version=v2 failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode v2 JSON: %v", err)
+	}
+	if env.Version != 2 || env.Output["ver"] != float64(2) {
+		t.Fatalf("unexpected --version=v2 envelope: %+v", env)
+	}
+
+	// 3. Explicit --scope global accesses shadowed global tool.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"run", "cli-dual", "--workdir", workDir, "--scope", "global", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run --scope global failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode global JSON: %v", err)
+	}
+	if env.Scope != contract.ScopeGlobal || env.Output["tier"] != "global" {
+		t.Fatalf("unexpected --scope global envelope: %+v", env)
+	}
+
+	// 4. Explicit --scope repo rejects global-only tool.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"run", "global-tool", "--workdir", workDir, "--scope=repo", "--json"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "TOOL_NOT_FOUND") {
+		t.Fatalf("expected exit 1 + TOOL_NOT_FOUND for --scope=repo on global tool, got code=%d stderr=%s", code, stderr.String())
+	}
+
+	// 5. Direct bundle path works without --tools-dir.
+	stdout.Reset()
+	stderr.Reset()
+	directPath := filepath.Join("..", "..", "examples", "repo-context")
+	code = run([]string{"run", directPath, "--workdir", repoRoot, "--arg", "include_tree=false", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run direct path failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("decode direct path JSON: %v", err)
+	}
+	if !env.OK || env.Scope != contract.ScopeOverride {
+		t.Fatalf("unexpected direct path envelope: %+v", env)
+	}
+
+	// 6. Invalid --scope and --version flags exit 2.
+	for _, badArgs := range [][]string{
+		{"run", "cli-dual", "--scope", "all"},
+		{"run", "cli-dual", "--scope=bogus"},
+		{"run", "cli-dual", "--version", "0"},
+		{"run", "cli-dual", "--version", "v0"},
+		{"run", "cli-dual", "--version=v01"},
+		{"run", "cli-dual", "--version", "abc"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if badCode := run(badArgs, &stdout, &stderr); badCode != 2 {
+			t.Fatalf("run(%v) code = %d, want 2 (stderr=%q)", badArgs, badCode, stderr.String())
+		}
 	}
 }

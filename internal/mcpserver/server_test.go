@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,39 @@ func decodeCallToolEnvelope(t *testing.T, res *mcp.CallToolResult) contract.RunR
 	return out
 }
 
+func writeVersionedMCPTool(t *testing.T, toolsDir, name string, ver int, tierLabel string) {
+	t.Helper()
+	verDir := filepath.Join(toolsDir, name, fmt.Sprintf("v%d", ver))
+	if err := os.MkdirAll(verDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", verDir, err)
+	}
+	manifest := fmt.Sprintf(`{
+  "schema_version": "1",
+  "name": %q,
+  "version": %d,
+  "description": "Versioned MCP test tool",
+  "read_only": true,
+  "input_schema": {"type": "object", "additionalProperties": false},
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["tier", "ver"],
+    "properties": {
+      "tier": {"type": "string"},
+      "ver": {"type": "integer"}
+    }
+  },
+  "capabilities": {}
+}`, name, ver)
+	if err := os.WriteFile(filepath.Join(verDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	src := fmt.Sprintf(`function main() { return { tier: %q, ver: %d }; }`, tierLabel, ver)
+	if err := os.WriteFile(filepath.Join(verDir, "tool.js"), []byte(src), 0o600); err != nil {
+		t.Fatalf("write tool.js: %v", err)
+	}
+}
+
 func TestMCPServerKnurlRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -71,9 +105,9 @@ func TestMCPServerKnurlRun(t *testing.T) {
 	t.Setenv("VPS_SSH_KEY_PATH", "")
 
 	server := mcpserver.NewServer(mcpserver.Config{
-		Loader:  &registry.Loader{ToolsDir: examplesDir},
-		WorkDir: workDir,
-		Version: "0.1.0-test",
+		Registry: &registry.Registry{WorkDir: workDir, OverrideDir: examplesDir},
+		WorkDir:  workDir,
+		Version:  "0.1.0-test",
 	})
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
 
@@ -118,7 +152,7 @@ func TestMCPServerKnurlRun(t *testing.T) {
 		t.Fatalf("expected IsError=false, got content=%+v", callRes.Content)
 	}
 	env := decodeCallToolEnvelope(t, callRes)
-	if !env.OK || env.Tool != "repo-context" || env.Version != 1 {
+	if !env.OK || env.Tool != "repo-context" || env.Version != 1 || env.Scope != contract.ScopeOverride {
 		t.Fatalf("unexpected RunResponse: %+v", env)
 	}
 	if isGit, _ := env.Output["is_git_repo"].(bool); !isGit {
@@ -210,5 +244,110 @@ func TestMCPServerKnurlRun(t *testing.T) {
 	}
 	if !mcpInvalidRes.IsError {
 		t.Fatalf("expected IsError=true when knurl_run receives unknown property")
+	}
+}
+
+func TestMCPServerTwoTierRegistryResolution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, "repo")
+	workDir := filepath.Join(repoRoot, "nested")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workDir: %v", err)
+	}
+
+	repoTools := filepath.Join(repoRoot, ".knurl", "tools")
+	globalHome := filepath.Join(root, "global-home")
+	globalTools := filepath.Join(globalHome, "tools")
+
+	// Shadowed tool: repo has v1 & v2 (active=2); global has v1.
+	writeVersionedMCPTool(t, repoTools, "dual-tool", 1, "repo")
+	writeVersionedMCPTool(t, repoTools, "dual-tool", 2, "repo")
+	if err := os.WriteFile(filepath.Join(repoTools, "dual-tool", "active.json"), []byte(`{"active_version":2,"previous_version":1,"updated_at":"2026-11-19T12:00:00Z"}`), 0o600); err != nil {
+		t.Fatalf("write active.json: %v", err)
+	}
+	writeVersionedMCPTool(t, globalTools, "dual-tool", 1, "global")
+	writeVersionedMCPTool(t, globalTools, "global-only", 1, "global")
+
+	t.Setenv("KNURL_HOME", globalHome)
+
+	server := mcpserver.NewServer(mcpserver.Config{
+		WorkDir: workDir,
+		Version: "0.1.0-test",
+	})
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- server.Run(ctx, serverTransport)
+	}()
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() {
+		_ = session.Close()
+		cancel()
+		if srvErr := <-serverErrCh; srvErr != nil && !errors.Is(srvErr, context.Canceled) {
+			t.Errorf("server.Run error: %v", srvErr)
+		}
+	}()
+
+	// 1. Default auto scope picks repo v2 shadowing global.
+	autoRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "knurl_run",
+		Arguments: map[string]any{"name": "dual-tool", "input": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(auto): %v", err)
+	}
+	autoEnv := decodeCallToolEnvelope(t, autoRes)
+	if !autoEnv.OK || autoEnv.Scope != contract.ScopeRepo || autoEnv.Version != 2 || autoEnv.Output["tier"] != "repo" {
+		t.Fatalf("unexpected auto result: %+v", autoEnv)
+	}
+
+	// 2. Explicit version=1 in auto scope loads repo v1.
+	v1Res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "knurl_run",
+		Arguments: map[string]any{"name": "dual-tool", "version": 1, "input": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(version 1): %v", err)
+	}
+	v1Env := decodeCallToolEnvelope(t, v1Res)
+	if !v1Env.OK || v1Env.Scope != contract.ScopeRepo || v1Env.Version != 1 || v1Env.Output["ver"] != float64(1) {
+		t.Fatalf("unexpected v1 result: %+v", v1Env)
+	}
+
+	// 3. Explicit scope="global" accesses shadowed global tool.
+	globalRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "knurl_run",
+		Arguments: map[string]any{"name": "dual-tool", "scope": "global", "input": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(global): %v", err)
+	}
+	globalEnv := decodeCallToolEnvelope(t, globalRes)
+	if !globalEnv.OK || globalEnv.Scope != contract.ScopeGlobal || globalEnv.Output["tier"] != "global" {
+		t.Fatalf("unexpected global result: %+v", globalEnv)
+	}
+
+	// 4. Explicit scope="repo" on global-only tool fails with TOOL_NOT_FOUND.
+	repoMissRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "knurl_run",
+		Arguments: map[string]any{"name": "global-only", "scope": "repo", "input": map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(repo miss): %v", err)
+	}
+	missEnv := decodeCallToolEnvelope(t, repoMissRes)
+	if missEnv.OK || missEnv.Error == nil || missEnv.Error.Code != contract.ErrToolNotFound {
+		t.Fatalf("expected TOOL_NOT_FOUND, got %+v", missEnv)
 	}
 }
