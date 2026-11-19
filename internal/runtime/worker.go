@@ -4,14 +4,26 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"time"
 
 	"github.com/ViniTamanhao/knurl/internal/contract"
 )
 
+const (
+	// DefaultWorkerMemoryLimitBytes configures the Go GC soft memory ceiling inside _worker (128 MiB).
+	DefaultWorkerMemoryLimitBytes int64 = 128 * 1024 * 1024
+
+	// DefaultWorkerHeapDeltaBytes limits active Go heap growth inside _worker VM execution (64 MiB).
+	DefaultWorkerHeapDeltaBytes uint64 = 64 * 1024 * 1024
+)
+
 // RunWorker executes a single framed WorkerRequest from stdin and writes one
 // compact NDJSON WorkerResponse frame to stdout.
 func RunWorker(stdin io.Reader, stdout io.Writer) int {
+	applyWorkerRLimits()
+	debug.SetMemoryLimit(DefaultWorkerMemoryLimitBytes)
+
 	req, err := decodeWorkerRequest(stdin)
 	if err != nil {
 		return writeWorkerResponse(stdout, contract.WorkerResponse{
@@ -31,7 +43,9 @@ func RunWorker(stdin io.Reader, stdout io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	resp := ExecuteInProcess(ctx, req)
+	resp := ExecuteInProcessWithConfig(ctx, req, ProcessConfig{
+		MaxHeapDeltaBytes: DefaultWorkerHeapDeltaBytes,
+	})
 	return writeWorkerResponse(stdout, resp)
 }
 

@@ -204,6 +204,13 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 	resp, decErr := decodeWorkerResponse(stdoutBuf.Bytes())
 	if decErr != nil {
 		stderrMsg := strings.TrimSpace(redactor.String(stderrBuf.String()))
+		stderrLower := strings.ToLower(stderrMsg)
+		code := contract.ErrWorkerCrashed
+		if strings.Contains(stderrLower, "out of memory") ||
+			strings.Contains(stderrLower, "cannot allocate memory") ||
+			strings.Contains(stderrLower, "memory limit") {
+			code = contract.ErrLimitExceeded
+		}
 		msg := fmt.Sprintf("worker exited unexpectedly (%v)", decErr)
 		if runErr != nil {
 			msg = fmt.Sprintf("worker exited unexpectedly (%v: %v)", runErr, decErr)
@@ -214,7 +221,7 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 		return contract.WorkerResponse{
 			OK: false,
 			Error: redactor.ToolError(&contract.ToolError{
-				Code:    contract.ErrWorkerCrashed,
+				Code:    code,
 				Message: msg,
 			}),
 			DurationMs: elapsedMs(),

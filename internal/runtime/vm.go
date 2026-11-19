@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -13,6 +14,19 @@ import (
 	"github.com/ViniTamanhao/knurl/internal/contract"
 	"github.com/ViniTamanhao/knurl/internal/host"
 )
+
+// MaxVMCallStackSize bounds JavaScript call stack depth to prevent stack
+// overflow crashes inside the synchronous goja VM.
+const MaxVMCallStackSize = 1024
+
+var errWorkerMemoryLimit = errors.New("worker memory limit exceeded")
+
+// ProcessConfig configures optional runtime limits and host options for
+// ExecuteInProcessWithConfig.
+type ProcessConfig struct {
+	MaxHeapDeltaBytes uint64
+	HostOptions       []host.Option
+}
 
 var knownHostErrorCodes = map[contract.ErrorCode]struct{}{
 	contract.ErrCapabilityDenied: {},
@@ -29,86 +43,121 @@ var knownHostErrorCodes = map[contract.ErrorCode]struct{}{
 // ExecuteInProcess compiles and runs req inside a fresh synchronous goja VM
 // bound to capability-enforced host primitives.
 func ExecuteInProcess(ctx context.Context, req contract.WorkerRequest) contract.WorkerResponse {
+	return ExecuteInProcessWithConfig(ctx, req, ProcessConfig{})
+}
+
+// ExecuteInProcessWithConfig compiles and runs req inside a fresh synchronous
+// goja VM configured with the supplied resource limits and host options.
+func ExecuteInProcessWithConfig(ctx context.Context, req contract.WorkerRequest, cfg ProcessConfig) contract.WorkerResponse {
 	start := time.Now()
 	elapsedMs := func() int64 { return time.Since(start).Milliseconds() }
 
 	redactor := host.NewRedactor(req.Secrets)
-	hostEnv, err := host.New(req.Manifest, req.WorkDir, req.Secrets, redactor)
+	finalize := func(resp contract.WorkerResponse) contract.WorkerResponse {
+		redactor.WorkerResponse(&resp)
+		return resp
+	}
+
+	hostEnv, err := host.NewWithOptions(req.Manifest, req.WorkDir, req.Secrets, redactor, cfg.HostOptions...)
 	if err != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:         false,
 			Error:      asToolError(err),
 			DurationMs: elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 	defer func() { _ = hostEnv.Close() }()
 
 	vm := goja.New()
+	vm.SetMaxCallStackSize(MaxVMCallStackSize)
+
 	jsonParse, jsonStringify, err := extractJSONBuiltins(vm)
 	if err != nil {
-		return contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:         false,
 			Error:      asToolError(err),
 			DurationMs: elapsedMs(),
-		}
+		})
 	}
 
 	if hyErr := installSandboxHygiene(vm); hyErr != nil {
-		return contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:         false,
 			Error:      asToolError(hyErr),
 			DurationMs: elapsedMs(),
-		}
+		})
 	}
 
 	if bindErr := bindKnurlHost(ctx, vm, hostEnv, jsonParse, jsonStringify); bindErr != nil {
-		return contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:         false,
 			Error:      asToolError(bindErr),
 			DurationMs: elapsedMs(),
-		}
+		})
 	}
 
 	prog, compileErr := goja.Compile("tool.js", req.Source, false)
 	if compileErr != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK: false,
 			Error: &contract.ToolError{
 				Code:    contract.ErrCompileError,
 				Message: fmt.Sprintf("compile tool.js: %v", compileErr),
 			},
 			DurationMs: elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
+	}
+
+	var baseHeap uint64
+	if cfg.MaxHeapDeltaBytes > 0 {
+		var ms goruntime.MemStats
+		goruntime.ReadMemStats(&ms)
+		baseHeap = ms.HeapAlloc
 	}
 
 	stopWatchdog := make(chan struct{})
 	defer close(stopWatchdog)
 	go func() {
-		select {
-		case <-ctx.Done():
-			vm.Interrupt(ctx.Err())
-		case <-stopWatchdog:
+		if cfg.MaxHeapDeltaBytes == 0 {
+			select {
+			case <-ctx.Done():
+				vm.Interrupt(ctx.Err())
+			case <-stopWatchdog:
+			}
+			return
+		}
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				vm.Interrupt(ctx.Err())
+				return
+			case <-stopWatchdog:
+				return
+			case <-ticker.C:
+				var cur goruntime.MemStats
+				goruntime.ReadMemStats(&cur)
+				if cur.HeapAlloc > baseHeap && cur.HeapAlloc-baseHeap > cfg.MaxHeapDeltaBytes {
+					vm.Interrupt(errWorkerMemoryLimit)
+					return
+				}
+			}
 		}
 	}()
 
 	if _, runErr := vm.RunProgram(prog); runErr != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:          false,
 			Error:       classifyVMError(ctx, runErr),
 			Diagnostics: hostEnv.Diagnostics(),
 			DurationMs:  elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 
 	mainFn, ok := goja.AssertFunction(vm.Get("main"))
 	if !ok {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK: false,
 			Error: &contract.ToolError{
 				Code:    contract.ErrCompileError,
@@ -116,9 +165,7 @@ func ExecuteInProcess(ctx context.Context, req contract.WorkerRequest) contract.
 			},
 			Diagnostics: hostEnv.Diagnostics(),
 			DurationMs:  elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 
 	inputMap := req.Input
@@ -127,31 +174,27 @@ func ExecuteInProcess(ctx context.Context, req contract.WorkerRequest) contract.
 	}
 	inputVal, inputErr := toNativeJS(vm, jsonParse, inputMap)
 	if inputErr != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:          false,
 			Error:       asToolError(inputErr),
 			Diagnostics: hostEnv.Diagnostics(),
 			DurationMs:  elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 
 	resVal, callErr := mainFn(goja.Undefined(), inputVal)
 	if callErr != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:          false,
 			Error:       classifyVMError(ctx, callErr),
 			Diagnostics: hostEnv.Diagnostics(),
 			DurationMs:  elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 
 	if resVal != nil {
 		if _, isPromise := resVal.Export().(*goja.Promise); isPromise {
-			resp := contract.WorkerResponse{
+			return finalize(contract.WorkerResponse{
 				OK: false,
 				Error: &contract.ToolError{
 					Code:    contract.ErrCompileError,
@@ -159,32 +202,26 @@ func ExecuteInProcess(ctx context.Context, req contract.WorkerRequest) contract.
 				},
 				Diagnostics: hostEnv.Diagnostics(),
 				DurationMs:  elapsedMs(),
-			}
-			redactor.WorkerResponse(&resp)
-			return resp
+			})
 		}
 	}
 
 	outputMap, outErr := extractJSOutputObject(jsonStringify, resVal)
 	if outErr != nil {
-		resp := contract.WorkerResponse{
+		return finalize(contract.WorkerResponse{
 			OK:          false,
 			Error:       outErr,
 			Diagnostics: hostEnv.Diagnostics(),
 			DurationMs:  elapsedMs(),
-		}
-		redactor.WorkerResponse(&resp)
-		return resp
+		})
 	}
 
-	resp := contract.WorkerResponse{
+	return finalize(contract.WorkerResponse{
 		OK:          true,
 		Output:      outputMap,
 		Diagnostics: hostEnv.Diagnostics(),
 		DurationMs:  elapsedMs(),
-	}
-	redactor.WorkerResponse(&resp)
-	return resp
+	})
 }
 
 func extractJSONBuiltins(vm *goja.Runtime) (jsonParse, jsonStringify goja.Callable, err error) {
@@ -778,17 +815,23 @@ func throwHostError(vm *goja.Runtime, jsonParse goja.Callable, err error) {
 }
 
 func classifyVMError(ctx context.Context, err error) *contract.ToolError {
+	var interrupted *goja.InterruptedError
+	if errors.As(err, &interrupted) {
+		if intErr, ok := interrupted.Value().(error); ok && errors.Is(intErr, errWorkerMemoryLimit) {
+			return &contract.ToolError{
+				Code:    contract.ErrLimitExceeded,
+				Message: "tool execution exceeded worker memory limit",
+			}
+		}
+		return &contract.ToolError{
+			Code:    contract.ErrTimeout,
+			Message: "tool execution interrupted due to timeout",
+		}
+	}
 	if ctx.Err() != nil {
 		return &contract.ToolError{
 			Code:    contract.ErrTimeout,
 			Message: "tool execution exceeded timeout",
-		}
-	}
-	var interrupted *goja.InterruptedError
-	if errors.As(err, &interrupted) {
-		return &contract.ToolError{
-			Code:    contract.ErrTimeout,
-			Message: "tool execution interrupted due to timeout",
 		}
 	}
 	var exc *goja.Exception
