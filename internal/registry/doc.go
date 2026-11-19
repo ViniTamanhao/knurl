@@ -1,6 +1,5 @@
-// Package registry resolves and reads approved tool bundles across knurl's
-// two-tier local store (repo-local ./.knurl/tools overriding global
-// ~/.config/knurl/tools) using atomic active.json version pointers.
-//
-// Registry filesystem operations are implemented starting in Phase 2.
+// Package registry resolves and reads tool bundles. In Phase 1 it provides
+// a minimal local bundle loader by directory path or within --tools-dir; full
+// two-tier repo/global resolution and atomic active.json pointers arrive in
+// Phase 2.
 package registry
