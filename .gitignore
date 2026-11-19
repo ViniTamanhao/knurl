@@ -1,5 +1,5 @@
 # Go build and test artifacts
-/bin/
+bin/
 *.exe
 *.exe~
 *.dll
