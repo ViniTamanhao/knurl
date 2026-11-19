@@ -1,0 +1,43 @@
+[tools]
+go = "1.27.4"
+golangci-lint = "2.15.0"
+lefthook = "2.2.2"
+
+[tasks.fmt]
+description = "Format all Go source files"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Fail if any Go file is unformatted"
+run = '''
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+  echo "Unformatted Go files:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+'''
+
+[tasks.lint]
+description = "Run golangci-lint across all Go packages"
+run = "golangci-lint run ./..."
+
+[tasks.test]
+description = "Run Go test suite with race detector"
+run = "go test -race ./..."
+
+[tasks.validate-schemas]
+description = "Run pure-Go schema and example bundle contract tests"
+run = "go test -v -run TestContract ./internal/contract/..."
+
+[tasks.build]
+description = "Build the knurl CLI binary to bin/knurl"
+run = "mkdir -p bin && go build -o bin/knurl ./cmd/knurl"
+
+[tasks.check]
+description = "Run the full verification gate (fmt-check, lint, test, validate-schemas, build)"
+depends = ["fmt-check", "lint", "test", "validate-schemas", "build"]
+
+[tasks.hooks]
+description = "Install local Git hooks with lefthook"
+run = "lefthook install"
