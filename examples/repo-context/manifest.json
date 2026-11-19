@@ -1,0 +1,152 @@
+{
+  "schema_version": "1",
+  "name": "repo-context",
+  "version": 1,
+  "description": "Summarize repository structure, detected manifests, git state, and recent commits",
+  "tags": ["git", "context", "summary", "read-only"],
+  "read_only": true,
+  "timeout_ms": 10000,
+  "capabilities": {
+    "fs": {
+      "read": ["**"]
+    },
+    "git": {
+      "read": true
+    }
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "include_tree": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include sorted workspace file list up to max_tree_files."
+      },
+      "max_tree_files": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 150,
+        "description": "Maximum number of file paths returned in tree_files."
+      },
+      "recent_commits": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 50,
+        "default": 10,
+        "description": "Number of recent commits to retrieve from git log."
+      },
+      "diff_base": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Optional git base ref to summarize diff stats against."
+      },
+      "include_readme_excerpt": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include up to 2048 bytes of README.md if present."
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "is_git_repo",
+      "file_count",
+      "top_directories",
+      "manifests",
+      "languages",
+      "git",
+      "tree_files",
+      "readme_excerpt"
+    ],
+    "properties": {
+      "is_git_repo": { "type": "boolean" },
+      "file_count": { "type": "integer", "minimum": 0 },
+      "top_directories": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "manifests": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "languages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "files"],
+          "properties": {
+            "name": { "type": "string" },
+            "files": { "type": "integer", "minimum": 1 }
+          }
+        }
+      },
+      "git": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": [
+          "branch",
+          "detached",
+          "head",
+          "upstream",
+          "clean",
+          "staged_count",
+          "unstaged_count",
+          "untracked_count",
+          "recent_commits",
+          "diff_files"
+        ],
+        "properties": {
+          "branch": { "type": "string" },
+          "detached": { "type": "boolean" },
+          "head": { "type": "string" },
+          "upstream": { "type": "string" },
+          "clean": { "type": "boolean" },
+          "staged_count": { "type": "integer", "minimum": 0 },
+          "unstaged_count": { "type": "integer", "minimum": 0 },
+          "untracked_count": { "type": "integer", "minimum": 0 },
+          "recent_commits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["short_hash", "author", "date", "subject"],
+              "properties": {
+                "short_hash": { "type": "string" },
+                "author": { "type": "string" },
+                "date": { "type": "string" },
+                "subject": { "type": "string" }
+              }
+            }
+          },
+          "diff_files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "additions", "deletions", "binary"],
+              "properties": {
+                "path": { "type": "string" },
+                "additions": { "type": "integer", "minimum": 0 },
+                "deletions": { "type": "integer", "minimum": 0 },
+                "binary": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      },
+      "tree_files": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "readme_excerpt": { "type": "string" }
+    }
+  }
+}

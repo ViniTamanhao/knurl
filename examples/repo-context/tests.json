@@ -1,0 +1,148 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {
+      "name": "go-repo-with-changes-and-diff-stat",
+      "description": "Summarizes a Go repository including git status, log, diff stat, and README excerpt",
+      "input": {
+        "include_tree": true,
+        "max_tree_files": 50,
+        "recent_commits": 2,
+        "diff_base": "main",
+        "include_readme_excerpt": true
+      },
+      "mocks": {
+        "fs": {
+          "files": {
+            "README.md": "# Demo Service\n\nMinimal HTTP API in Go.\n",
+            "cmd/server/main.go": "package main\nfunc main() {}\n",
+            "go.mod": "module example.com/demo\n\ngo 1.27\n",
+            "internal/handler/health.go": "package handler\n"
+          }
+        },
+        "git": {
+          "branch": {
+            "current": "feat/health-endpoint",
+            "detached": false,
+            "head": "abc1234def5678",
+            "upstream": "origin/feat/health-endpoint"
+          },
+          "status": {
+            "clean": false,
+            "staged": [
+              { "path": "internal/handler/health.go", "status": "A" }
+            ],
+            "unstaged": [
+              { "path": "cmd/server/main.go", "status": "M" }
+            ],
+            "untracked": []
+          },
+          "log": [
+            {
+              "hash": "abc1234def5678901234567890abcdef12345678",
+              "short_hash": "abc1234",
+              "author": "Vini",
+              "date": "2026-11-19T10:00:00Z",
+              "subject": "feat: add health handler"
+            }
+          ],
+          "diff": {
+            "files": [
+              { "path": "cmd/server/main.go", "additions": 12, "deletions": 2, "binary": false },
+              { "path": "internal/handler/health.go", "additions": 24, "deletions": 0, "binary": false }
+            ],
+            "truncated": false
+          }
+        }
+      },
+      "expect": {
+        "ok": true,
+        "output": {
+          "is_git_repo": true,
+          "file_count": 4,
+          "top_directories": ["cmd", "internal"],
+          "manifests": ["go.mod"],
+          "languages": [
+            { "name": "Go", "files": 2 },
+            { "name": "Markdown", "files": 1 }
+          ],
+          "git": {
+            "branch": "feat/health-endpoint",
+            "detached": false,
+            "head": "abc1234def5678",
+            "upstream": "origin/feat/health-endpoint",
+            "clean": false,
+            "staged_count": 1,
+            "unstaged_count": 1,
+            "untracked_count": 0,
+            "recent_commits": [
+              {
+                "short_hash": "abc1234",
+                "author": "Vini",
+                "date": "2026-11-19T10:00:00Z",
+                "subject": "feat: add health handler"
+              }
+            ],
+            "diff_files": [
+              { "path": "cmd/server/main.go", "additions": 12, "deletions": 2, "binary": false },
+              { "path": "internal/handler/health.go", "additions": 24, "deletions": 0, "binary": false }
+            ]
+          },
+          "tree_files": [
+            "README.md",
+            "cmd/server/main.go",
+            "go.mod",
+            "internal/handler/health.go"
+          ],
+          "readme_excerpt": "# Demo Service\n\nMinimal HTTP API in Go.\n"
+        }
+      }
+    },
+    {
+      "name": "non-git-directory",
+      "description": "Handles directories outside a git worktree gracefully with git: null",
+      "input": {
+        "include_tree": false,
+        "include_readme_excerpt": false
+      },
+      "mocks": {
+        "fs": {
+          "files": {
+            "mise.toml": "[tools]\ngo = \"1.27.4\"\n",
+            "scripts/check.sh": "#!/bin/sh\necho ok\n"
+          }
+        },
+        "git": {
+          "error": "NOT_A_GIT_REPO"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "output": {
+          "is_git_repo": false,
+          "file_count": 2,
+          "top_directories": ["scripts"],
+          "manifests": ["mise.toml"],
+          "languages": [
+            { "name": "Shell", "files": 1 },
+            { "name": "TOML", "files": 1 }
+          ],
+          "git": null,
+          "tree_files": [],
+          "readme_excerpt": ""
+        }
+      }
+    },
+    {
+      "name": "invalid-recent-commits-out-of-range",
+      "description": "Rejects recent_commits above input_schema maximum before tool execution",
+      "input": {
+        "recent_commits": 500
+      },
+      "expect": {
+        "ok": false,
+        "error_code": "INVALID_INPUT"
+      }
+    }
+  ]
+}

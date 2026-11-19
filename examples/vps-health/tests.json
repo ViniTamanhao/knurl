@@ -1,0 +1,182 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {
+      "name": "healthy-vps-with-http-check",
+      "description": "Reports healthy status when metrics, services, and authenticated HTTPS health check pass",
+      "input": {
+        "host": "prod-01.example.com",
+        "user": "ops",
+        "port": 2222,
+        "services": ["nginx", "caddy"],
+        "check_http_url": "https://status.example.com/healthz",
+        "disk_warn_pct": 85
+      },
+      "mocks": {
+        "secrets": ["VPS_SSH_KEY_PATH", "VPS_HEALTH_TOKEN"],
+        "exec": [
+          {
+            "template_id": "ssh-system-metrics",
+            "params": {
+              "port": "2222",
+              "user": "ops",
+              "host": "prod-01.example.com"
+            },
+            "result": {
+              "exit_code": 0,
+              "stdout": "Linux 6.8.0-45-generic x86_64\n 14:22:01 up 18 days,  3:14,  1 user,  load average: 0.42, 0.38, 0.31\n               total        used        free      shared  buff/cache   available\nMem:            4096        1536         900          24        1660        2300\nSwap:           1024           0        1024\nFilesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/vda1         41152832  18930304  20112416      49% /\n"
+            }
+          },
+          {
+            "template_id": "ssh-service-status",
+            "params": {
+              "port": "2222",
+              "user": "ops",
+              "host": "prod-01.example.com",
+              "service": "nginx"
+            },
+            "result": {
+              "exit_code": 0,
+              "stdout": "active\n"
+            }
+          },
+          {
+            "template_id": "ssh-service-status",
+            "params": {
+              "port": "2222",
+              "user": "ops",
+              "host": "prod-01.example.com",
+              "service": "caddy"
+            },
+            "result": {
+              "exit_code": 0,
+              "stdout": "active\n"
+            }
+          }
+        ],
+        "http": [
+          {
+            "method": "GET",
+            "url": "https://status.example.com/healthz",
+            "require_headers": {
+              "Authorization": "Bearer ${secret:VPS_HEALTH_TOKEN}"
+            },
+            "result": {
+              "status": 200,
+              "headers": {
+                "content-type": "application/json"
+              },
+              "body": "{\"status\":\"ok\"}"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "output": {
+          "host": "prod-01.example.com",
+          "healthy": true,
+          "kernel": "Linux 6.8.0-45-generic x86_64",
+          "load_1m": 0.42,
+          "memory_used_pct": 37.5,
+          "disk_used_pct": 49,
+          "services": [
+            { "name": "nginx", "active": true, "state": "active" },
+            { "name": "caddy", "active": true, "state": "active" }
+          ],
+          "http_check": {
+            "url": "https://status.example.com/healthz",
+            "status": 200,
+            "ok": true
+          },
+          "warnings": []
+        }
+      }
+    },
+    {
+      "name": "degraded-vps-inactive-service-and-high-disk",
+      "description": "Reports degraded state and warnings when disk exceeds threshold or a systemd unit is inactive",
+      "input": {
+        "host": "198.51.100.10",
+        "user": "deploy",
+        "services": ["nginx", "postgresql"],
+        "disk_warn_pct": 80
+      },
+      "mocks": {
+        "secrets": ["VPS_SSH_KEY_PATH"],
+        "exec": [
+          {
+            "template_id": "ssh-system-metrics",
+            "params": {
+              "port": "22",
+              "user": "deploy",
+              "host": "198.51.100.10"
+            },
+            "result": {
+              "exit_code": 0,
+              "stdout": "Linux 6.8.0-45-generic x86_64\n 14:25:00 up 2 days,  1:00,  0 users,  load average: 1.25, 0.90, 0.70\n               total        used        free      shared  buff/cache   available\nMem:            2048        1024         512          12         512        1000\nSwap:              0           0           0\nFilesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/vda1         41152832  36214492   2828228      88% /\n"
+            }
+          },
+          {
+            "template_id": "ssh-service-status",
+            "params": {
+              "port": "22",
+              "user": "deploy",
+              "host": "198.51.100.10",
+              "service": "nginx"
+            },
+            "result": {
+              "exit_code": 0,
+              "stdout": "active\n"
+            }
+          },
+          {
+            "template_id": "ssh-service-status",
+            "params": {
+              "port": "22",
+              "user": "deploy",
+              "host": "198.51.100.10",
+              "service": "postgresql"
+            },
+            "result": {
+              "exit_code": 3,
+              "stdout": "inactive\n"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "output": {
+          "host": "198.51.100.10",
+          "healthy": false,
+          "kernel": "Linux 6.8.0-45-generic x86_64",
+          "load_1m": 1.25,
+          "memory_used_pct": 50,
+          "disk_used_pct": 88,
+          "services": [
+            { "name": "nginx", "active": true, "state": "active" },
+            { "name": "postgresql", "active": false, "state": "inactive" }
+          ],
+          "http_check": null,
+          "warnings": [
+            "root disk usage 88% >= 80%",
+            "service postgresql is inactive"
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-flag-injection-hostname",
+      "description": "Rejects hostname beginning with '-' to block SSH flag injection",
+      "input": {
+        "host": "-oProxyCommand=id",
+        "user": "ops"
+      },
+      "expect": {
+        "ok": false,
+        "error_code": "INVALID_INPUT"
+      }
+    }
+  ]
+}

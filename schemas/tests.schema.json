@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knurl.dev/schemas/tests.schema.json",
+  "title": "knurl Tool Test Suite",
+  "description": "Mock-backed deterministic test contract for a knurl tool bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "cases"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/testCase"
+      }
+    }
+  },
+  "$defs": {
+    "testCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "input", "expect"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input": {
+          "type": "object"
+        },
+        "mocks": {
+          "$ref": "#/$defs/testMocks"
+        },
+        "expect": {
+          "$ref": "#/$defs/testExpectation"
+        }
+      }
+    },
+    "testMocks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fs": {
+          "$ref": "#/$defs/fsMock"
+        },
+        "git": {
+          "$ref": "#/$defs/gitMock"
+        },
+        "http": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/httpMock"
+          }
+        },
+        "exec": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execMock"
+          }
+        },
+        "secrets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+          }
+        }
+      }
+    },
+    "fsMock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files"],
+      "properties": {
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "gitMock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string",
+          "enum": ["NOT_A_GIT_REPO", "CAPABILITY_DENIED", "EXEC_FAILED"]
+        },
+        "branch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["current", "detached", "head"],
+          "properties": {
+            "current": { "type": "string" },
+            "detached": { "type": "boolean" },
+            "head": { "type": "string" },
+            "upstream": { "type": "string" }
+          }
+        },
+        "status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["clean", "staged", "unstaged", "untracked"],
+          "properties": {
+            "clean": { "type": "boolean" },
+            "staged": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/gitFileChange" }
+            },
+            "unstaged": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/gitFileChange" }
+            },
+            "untracked": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "log": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/gitCommit" }
+        },
+        "diff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["files", "truncated"],
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/gitDiffFile" }
+            },
+            "patch": { "type": "string" },
+            "truncated": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "gitFileChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["M", "A", "D", "R", "C", "U"]
+        }
+      }
+    },
+    "gitCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hash", "short_hash", "author", "date", "subject"],
+      "properties": {
+        "hash": { "type": "string", "minLength": 7 },
+        "short_hash": { "type": "string", "minLength": 4 },
+        "author": { "type": "string" },
+        "date": { "type": "string" },
+        "subject": { "type": "string" }
+      }
+    },
+    "gitDiffFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "additions", "deletions", "binary"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "additions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "binary": { "type": "boolean" }
+      }
+    },
+    "httpMock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url"],
+      "oneOf": [
+        { "required": ["result"] },
+        { "required": ["error"] }
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST"]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "require_headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "body"],
+          "properties": {
+            "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "body": { "type": "string" }
+          }
+        },
+        "error": {
+          "type": "string",
+          "enum": [
+            "CAPABILITY_DENIED",
+            "SECRET_MISSING",
+            "TIMEOUT",
+            "LIMIT_EXCEEDED",
+            "HTTP_ERROR"
+          ]
+        }
+      }
+    },
+    "execMock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id"],
+      "oneOf": [
+        { "required": ["result"] },
+        { "required": ["error"] }
+      ],
+      "properties": {
+        "template_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exit_code", "stdout"],
+          "properties": {
+            "exit_code": { "type": "integer" },
+            "stdout": { "type": "string" },
+            "stderr": { "type": "string" }
+          }
+        },
+        "error": {
+          "type": "string",
+          "enum": [
+            "CAPABILITY_DENIED",
+            "INVALID_ARGUMENT",
+            "SECRET_MISSING",
+            "TIMEOUT",
+            "EXEC_FAILED"
+          ]
+        }
+      }
+    },
+    "testExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "output": { "type": "object" },
+        "output_subset": { "type": "object" },
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "INVALID_INPUT",
+            "INVALID_OUTPUT",
+            "CAPABILITY_DENIED",
+            "NOT_FOUND",
+            "NOT_A_GIT_REPO",
+            "INVALID_ARGUMENT",
+            "SECRET_MISSING",
+            "TIMEOUT",
+            "LIMIT_EXCEEDED",
+            "TOOL_ERROR",
+            "EXEC_FAILED",
+            "HTTP_ERROR"
+          ]
+        },
+        "error_contains": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "if": {
+        "properties": { "ok": { "const": true } },
+        "required": ["ok"]
+      },
+      "then": {
+        "oneOf": [
+          { "required": ["output"] },
+          { "required": ["output_subset"] }
+        ],
+        "not": {
+          "anyOf": [
+            { "required": ["error_code"] },
+            { "required": ["error_contains"] }
+          ]
+        }
+      },
+      "else": {
+        "required": ["error_code"],
+        "not": {
+          "anyOf": [
+            { "required": ["output"] },
+            { "required": ["output_subset"] }
+          ]
+        }
+      }
+    }
+  }
+}
