@@ -63,7 +63,7 @@ func ExecuteInProcess(ctx context.Context, req contract.WorkerRequest) contract.
 		}
 	}
 
-	if bindErr := bindKnurlHost(ctx, vm, hostEnv, jsonParse); bindErr != nil {
+	if bindErr := bindKnurlHost(ctx, vm, hostEnv, jsonParse, jsonStringify); bindErr != nil {
 		return contract.WorkerResponse{
 			OK:         false,
 			Error:      asToolError(bindErr),
@@ -252,7 +252,7 @@ func installSandboxHygiene(vm *goja.Runtime) error {
 	return vm.Set("Promise", promiseObj)
 }
 
-func bindKnurlHost(ctx context.Context, vm *goja.Runtime, h *host.Host, jsonParse goja.Callable) error {
+func bindKnurlHost(ctx context.Context, vm *goja.Runtime, h *host.Host, jsonParse, jsonStringify goja.Callable) error {
 	knurlObj := vm.NewObject()
 
 	fsObj := vm.NewObject()
@@ -304,7 +304,12 @@ func bindKnurlHost(ctx context.Context, vm *goja.Runtime, h *host.Host, jsonPars
 		if err != nil {
 			throwHostError(vm, jsonParse, err)
 		}
-		return mustToNativeJS(vm, jsonParse, br)
+		return mustToNativeJS(vm, jsonParse, map[string]any{
+			"current":  br.Current,
+			"detached": br.Detached,
+			"head":     br.Head,
+			"upstream": br.Upstream,
+		})
 	}); err != nil {
 		return err
 	}
@@ -348,17 +353,36 @@ func bindKnurlHost(ctx context.Context, vm *goja.Runtime, h *host.Host, jsonPars
 	}
 
 	httpObj := vm.NewObject()
-	httpDeferred := func(goja.FunctionCall) goja.Value {
-		throwHostError(vm, jsonParse, &contract.ToolError{
-			Code:    contract.ErrHTTPError,
-			Message: "knurl.http is deferred to Phase 2",
-		})
-		return goja.Undefined()
-	}
-	if err := httpObj.Set("get", httpDeferred); err != nil {
+	if err := httpObj.Set("get", func(call goja.FunctionCall) goja.Value {
+		urlStr := requireStringArg(vm, call, "knurl.http.get requires a URL string")
+		opts, err := parseHTTPOpts(call.Argument(1))
+		if err != nil {
+			throwHostError(vm, jsonParse, err)
+		}
+		res, httpErr := h.HTTPGet(ctx, urlStr, opts)
+		if httpErr != nil {
+			throwHostError(vm, jsonParse, httpErr)
+		}
+		return mustToNativeJS(vm, jsonParse, res)
+	}); err != nil {
 		return err
 	}
-	if err := httpObj.Set("post", httpDeferred); err != nil {
+	if err := httpObj.Set("post", func(call goja.FunctionCall) goja.Value {
+		urlStr := requireStringArg(vm, call, "knurl.http.post requires a URL string")
+		bodyBytes, isJSON, bodyErr := parseHTTPBody(jsonStringify, call.Argument(1))
+		if bodyErr != nil {
+			throwHostError(vm, jsonParse, bodyErr)
+		}
+		opts, err := parseHTTPOpts(call.Argument(2))
+		if err != nil {
+			throwHostError(vm, jsonParse, err)
+		}
+		res, httpErr := h.HTTPPost(ctx, urlStr, bodyBytes, isJSON, opts)
+		if httpErr != nil {
+			throwHostError(vm, jsonParse, httpErr)
+		}
+		return mustToNativeJS(vm, jsonParse, res)
+	}); err != nil {
 		return err
 	}
 	if err := knurlObj.Set("http", httpObj); err != nil {
@@ -640,6 +664,66 @@ func parseExecOpts(arg goja.Value) (host.ExecOptions, error) {
 		return host.ExecOptions{}, err
 	}
 	return host.ExecOptions{TimeoutMs: timeoutMs, HasTimeout: hasTimeout}, nil
+}
+
+func parseHTTPOpts(arg goja.Value) (host.HTTPOptions, error) {
+	m, err := parseOptionsMap(arg)
+	if err != nil || m == nil {
+		return host.HTTPOptions{}, err
+	}
+	timeoutMs, hasTimeout, err := extractIntOpt(m, "timeout_ms")
+	if err != nil {
+		return host.HTTPOptions{}, err
+	}
+	var headers map[string]string
+	if rawHeaders, ok := m["headers"]; ok && rawHeaders != nil {
+		hdrMap, isMap := rawHeaders.(map[string]any)
+		if !isMap {
+			return host.HTTPOptions{}, &contract.ToolError{
+				Code:    contract.ErrInvalidArgument,
+				Message: `option "headers" must be an object of strings`,
+			}
+		}
+		headers = make(map[string]string, len(hdrMap))
+		for k, v := range hdrMap {
+			s, isStr := v.(string)
+			if !isStr {
+				return host.HTTPOptions{}, &contract.ToolError{
+					Code:    contract.ErrInvalidArgument,
+					Message: fmt.Sprintf("HTTP header %q value must be a string", k),
+				}
+			}
+			headers[k] = s
+		}
+	}
+	return host.HTTPOptions{
+		Headers:    headers,
+		TimeoutMs:  timeoutMs,
+		HasTimeout: hasTimeout,
+	}, nil
+}
+
+func parseHTTPBody(jsonStringify goja.Callable, arg goja.Value) ([]byte, bool, error) {
+	if arg == nil || goja.IsUndefined(arg) || goja.IsNull(arg) {
+		return nil, false, nil
+	}
+	if s, ok := arg.Export().(string); ok {
+		return []byte(s), false, nil
+	}
+	strVal, err := jsonStringify(goja.Undefined(), arg)
+	if err != nil {
+		return nil, false, &contract.ToolError{
+			Code:    contract.ErrInvalidArgument,
+			Message: fmt.Sprintf("HTTP POST body is not JSON-serializable: %v", err),
+		}
+	}
+	if strVal == nil || goja.IsUndefined(strVal) {
+		return nil, false, &contract.ToolError{
+			Code:    contract.ErrInvalidArgument,
+			Message: "HTTP POST body is not JSON-serializable",
+		}
+	}
+	return []byte(strVal.String()), true, nil
 }
 
 func toNativeJS(vm *goja.Runtime, jsonParse goja.Callable, v any) (goja.Value, error) {

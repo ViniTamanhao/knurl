@@ -107,7 +107,7 @@ func (h *Host) FSRead(rawPath string, opts FSReadOptions) (string, error) {
 		}
 	}
 
-	file, openErr := h.root.Open(relPath)
+	file, openErr := h.root.Open(resolvedRel)
 	if openErr != nil {
 		if errors.Is(openErr, fs.ErrNotExist) {
 			return "", &contract.ToolError{
@@ -184,7 +184,7 @@ func (h *Host) FSStat(rawPath string) (FSStatResult, error) {
 		}
 	}
 
-	info, statErr := h.root.Stat(relPath)
+	info, statErr := h.root.Stat(resolvedRel)
 	if statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return FSStatResult{Exists: false}, nil
@@ -214,6 +214,28 @@ func (h *Host) FSGlob(rawPattern string, opts FSGlobOptions) ([]string, error) {
 	cleanPattern, err := ValidateGlobPattern(rawPattern)
 	if err != nil {
 		return nil, err
+	}
+	if !GlobIntersectsAny(patterns, cleanPattern) {
+		return nil, &contract.ToolError{
+			Code:    contract.ErrCapabilityDenied,
+			Message: fmt.Sprintf("glob pattern %q is outside capabilities.fs.read", rawPattern),
+		}
+	}
+
+	if literalPrefix, restSegs := splitLiteralGlobPrefix(cleanPattern); literalPrefix != "" {
+		resolvedPrefix, _, resErr := resolveWithinRoot(h.root, literalPrefix)
+		if resErr != nil {
+			return nil, resErr
+		}
+		if resolvedPrefix != literalPrefix {
+			rewritten := rewriteGlobPattern(resolvedPrefix, restSegs)
+			if !GlobIntersectsAny(patterns, rewritten) {
+				return nil, &contract.ToolError{
+					Code:    contract.ErrCapabilityDenied,
+					Message: fmt.Sprintf("resolved glob target %q is outside capabilities.fs.read", rewritten),
+				}
+			}
+		}
 	}
 
 	maxResults := DefaultGlobMaxResults
@@ -349,9 +371,23 @@ func resolveWithinRoot(root *os.Root, relPath string) (string, bool, error) {
 			if errors.Is(err, fs.ErrNotExist) {
 				remaining := append(slicesClone(resolved), seg)
 				for _, rem := range queue {
-					if rem != "" && rem != "." {
-						remaining = append(remaining, rem)
+					if rem == "" || rem == "." {
+						continue
 					}
+					if rem == ".." {
+						if len(remaining) == 0 {
+							return "", false, &contract.ToolError{
+								Code:    contract.ErrCapabilityDenied,
+								Message: fmt.Sprintf("symlink traversal in %q escapes workspace root", relPath),
+							}
+						}
+						remaining = remaining[:len(remaining)-1]
+						continue
+					}
+					remaining = append(remaining, rem)
+				}
+				if len(remaining) == 0 {
+					return ".", false, nil
 				}
 				return strings.Join(remaining, "/"), false, nil
 			}
@@ -403,6 +439,36 @@ func slicesClone(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)
 	return out
+}
+
+func splitLiteralGlobPrefix(cleanPattern string) (string, []string) {
+	if cleanPattern == "" || cleanPattern == "." {
+		return "", nil
+	}
+	segs := strings.Split(cleanPattern, "/")
+	var literal []string
+	var idx int
+	for idx = 0; idx < len(segs); idx++ {
+		seg := segs[idx]
+		if seg == "" || seg == "." || seg == "**" || strings.ContainsAny(seg, `*?[\`) {
+			break
+		}
+		literal = append(literal, seg)
+	}
+	if len(literal) == 0 {
+		return "", segs
+	}
+	return strings.Join(literal, "/"), segs[idx:]
+}
+
+func rewriteGlobPattern(resolvedPrefix string, restSegs []string) string {
+	if len(restSegs) == 0 {
+		return resolvedPrefix
+	}
+	if resolvedPrefix == "." || resolvedPrefix == "" {
+		return strings.Join(restSegs, "/")
+	}
+	return resolvedPrefix + "/" + strings.Join(restSegs, "/")
 }
 
 func trimTrailingIncompleteUTF8(b []byte) []byte {

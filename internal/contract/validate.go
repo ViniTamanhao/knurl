@@ -159,7 +159,7 @@ func validateArgSchema(templateID, key string, spec ExecArgSchema) error {
 	if _, err := regexp.Compile(spec.Pattern); err != nil {
 		return fmt.Errorf("exec template %q args_schema[%q] invalid RE2 pattern %q: %w", templateID, key, spec.Pattern, err)
 	}
-	anchored, err := regexp.Compile("^(?:" + spec.Pattern + ")$")
+	anchored, err := regexp.Compile(`\A(?:` + spec.Pattern + `)\z`)
 	if err != nil {
 		return fmt.Errorf("exec template %q args_schema[%q] anchored RE2 compile failed: %w", templateID, key, err)
 	}
@@ -322,8 +322,20 @@ func domainMatchesRule(host, pattern string) bool {
 }
 
 func pathMatchesAnyPrefix(reqPath string, prefixes []string) bool {
+	if reqPath == "" {
+		reqPath = "/"
+	}
 	for _, p := range prefixes {
-		if strings.HasPrefix(reqPath, p) {
+		if p == "/" {
+			return true
+		}
+		if strings.HasSuffix(p, "/") {
+			if strings.HasPrefix(reqPath, p) {
+				return true
+			}
+			continue
+		}
+		if reqPath == p || strings.HasPrefix(reqPath, p+"/") {
 			return true
 		}
 	}

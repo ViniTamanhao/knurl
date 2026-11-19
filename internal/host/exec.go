@@ -17,22 +17,34 @@ import (
 // MaxExecStreamBytes bounds captured stdout and stderr per exec call (256 KiB).
 const MaxExecStreamBytes = 262144
 
-var forbiddenShellPrograms = map[string]struct{}{
-	"sh":             {},
-	"bash":           {},
-	"zsh":            {},
-	"dash":           {},
-	"fish":           {},
-	"ksh":            {},
-	"csh":            {},
-	"tcsh":           {},
-	"cmd":            {},
-	"cmd.exe":        {},
-	"powershell":     {},
-	"powershell.exe": {},
-	"pwsh":           {},
-	"eval":           {},
-}
+var (
+	execProgramRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+	forbiddenShellPrograms = map[string]struct{}{
+		"sh":             {},
+		"bash":           {},
+		"zsh":            {},
+		"dash":           {},
+		"fish":           {},
+		"ksh":            {},
+		"csh":            {},
+		"tcsh":           {},
+		"cmd":            {},
+		"cmd.exe":        {},
+		"powershell":     {},
+		"powershell.exe": {},
+		"pwsh":           {},
+		"eval":           {},
+	}
+
+	forbiddenDynamicLinkerEnvKeys = map[string]struct{}{
+		"LD_PRELOAD":            {},
+		"LD_LIBRARY_PATH":       {},
+		"DYLD_INSERT_LIBRARIES": {},
+		"DYLD_LIBRARY_PATH":     {},
+		"DYLD_FRAMEWORK_PATH":   {},
+	}
+)
 
 // ExecOptions configures knurl.exec.
 type ExecOptions struct {
@@ -150,6 +162,12 @@ func (h *Host) lookupExecTemplate(templateID string) (contract.ExecTemplate, err
 		if tmpl.ID != templateID {
 			continue
 		}
+		if !execProgramRegexp.MatchString(tmpl.Program) {
+			return contract.ExecTemplate{}, &contract.ToolError{
+				Code:    contract.ErrCapabilityDenied,
+				Message: fmt.Sprintf("exec template %q invalid program name %q", templateID, tmpl.Program),
+			}
+		}
 		progLower := strings.ToLower(tmpl.Program)
 		if _, forbidden := forbiddenShellPrograms[progLower]; forbidden {
 			return contract.ExecTemplate{}, &contract.ToolError{
@@ -157,10 +175,18 @@ func (h *Host) lookupExecTemplate(templateID string) (contract.ExecTemplate, err
 				Message: fmt.Sprintf("forbidden shell program %q in template %q", tmpl.Program, templateID),
 			}
 		}
-		if strings.ContainsAny(tmpl.Program, `/\`) || len(tmpl.Args) == 0 || strings.Contains(tmpl.Args[0], "${") {
+		if len(tmpl.Args) == 0 || tmpl.Args[0] == "" || strings.Contains(tmpl.Args[0], "${") {
 			return contract.ExecTemplate{}, &contract.ToolError{
 				Code:    contract.ErrCapabilityDenied,
 				Message: fmt.Sprintf("exec template %q violates program/args[0] invariants", templateID),
+			}
+		}
+		for envKey := range tmpl.Env {
+			if _, blocked := forbiddenDynamicLinkerEnvKeys[strings.ToUpper(envKey)]; blocked {
+				return contract.ExecTemplate{}, &contract.ToolError{
+					Code:    contract.ErrCapabilityDenied,
+					Message: fmt.Sprintf("exec template %q sets forbidden dynamic linker env variable %q", templateID, envKey),
+				}
 			}
 		}
 		return tmpl, nil
@@ -172,6 +198,34 @@ func (h *Host) lookupExecTemplate(templateID string) (contract.ExecTemplate, err
 }
 
 func validateExecParams(tmpl contract.ExecTemplate, params map[string]string) error {
+	for idx, rawArg := range tmpl.Args {
+		rest := rawArg
+		for {
+			start := strings.Index(rest, "${")
+			if start < 0 {
+				break
+			}
+			after := rest[start+2:]
+			end := strings.IndexByte(after, '}')
+			if end < 0 {
+				return &contract.ToolError{
+					Code:    contract.ErrInvalidManifest,
+					Message: fmt.Sprintf("exec template %q args[%d] contains unclosed placeholder", tmpl.ID, idx),
+				}
+			}
+			token := after[:end]
+			if argKey, ok := strings.CutPrefix(token, "arg:"); ok {
+				if _, declared := tmpl.ArgsSchema[argKey]; !declared {
+					return &contract.ToolError{
+						Code:    contract.ErrInvalidManifest,
+						Message: fmt.Sprintf("exec template %q args[%d] references undeclared arg %q", tmpl.ID, idx, argKey),
+					}
+				}
+			}
+			rest = after[end+1:]
+		}
+	}
+
 	for k := range params {
 		if _, ok := tmpl.ArgsSchema[k]; !ok {
 			return &contract.ToolError{
@@ -206,7 +260,7 @@ func validateExecParams(tmpl contract.ExecTemplate, params map[string]string) er
 				Message: fmt.Sprintf("exec argument %q value %q is not in allowed enum", key, val),
 			}
 		}
-		re, err := regexp.Compile("^(?:" + spec.Pattern + ")$")
+		re, err := regexp.Compile(`\A(?:` + spec.Pattern + `)\z`)
 		if err != nil {
 			return &contract.ToolError{
 				Code:    contract.ErrInvalidManifest,
