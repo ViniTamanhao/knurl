@@ -6,7 +6,7 @@ The name **knurl** comes from machining: cutting a textured grip into smooth met
 
 `knurl` is a single-binary, local-first, open-source Go tool vault. Agents author synchronous JavaScript tools (`tool.js`) paired with typed JSON Schemas (`manifest.json`) and mock-backed tests (`tests.json`), submit them to a staging gate, and—after explicit human inspection and approval—run them across sessions and clients via CLI or stdio MCP.
 
-> **Status:** **Phase 1 (Core Execution Slice / Kill-or-Commit Gate)** is implemented—`knurl _worker` subprocess isolation (`goja`), `os.Root` filesystem confinement, read-only `knurl.git`, templated `knurl.exec`, host secret binding & redaction, `knurl run`, and `knurl mcp` (`knurl_run`). Two-tier registry, `knurl.http`, and the `knurl_propose`/`knurl approve` workflow arrive in Phases 2–3.
+> **Status:** **Phase 2 (Registry, Scoping & Security Hardening)** is implemented—building on Phase 1's isolated `_worker` runtime, `knurl` now enforces a two-tier versioned filesystem registry (`./.knurl/tools` shadowing `~/.config/knurl/tools`), complete SSRF-safe & redirect-isolated `knurl.http` (`get`/`post`), hardened `fs`/`git`/`exec` boundaries, `_worker` memory/stack/rlimit safeguards, multi-line JSON-safe secret redaction, and a 10-category adversarial security suite. Staging, `knurl_propose`, `knurl approve`, and `knurl rollback` arrive in Phase 3.
 
 ## Core Principles
 
@@ -45,7 +45,7 @@ The name **knurl** comes from machining: cutting a textured grip into smooth met
 - **Two-Tier Registry & Staging:** Repo-local `./.knurl/tools/` overrides global `~/.config/knurl/tools/`; unapproved changes live strictly in `~/.config/knurl/staging/`.
 - **5 Static MCP Meta-Tools:** `knurl_discover`, `knurl_inspect`, `knurl_run`, `knurl_propose`, and `knurl_status` over stdio (`github.com/modelcontextprotocol/go-sdk/mcp`).
 
-## Phase 1 Quickstart (Build, CLI & Stdio MCP)
+## Quickstart (Build, Two-Tier Registry, CLI & Stdio MCP)
 
 Build the single static `knurl` binary with `mise`:
 
@@ -55,7 +55,16 @@ mise run build
 
 ### Run a Tool from the CLI (`knurl run`)
 
-Execute `examples/repo-context` against the current repository:
+By default, `knurl run <tool>` resolves versioned bundles (`tools/<name>/v<N>/`) across the **two-tier registry** (walking upward from `--workdir` for `./.knurl/tools` up to `.git`, then falling back to `$KNURL_HOME/tools`, `$KNURL_CONFIG_DIR/tools`, `$XDG_CONFIG_HOME/knurl/tools`, or `~/.config/knurl/tools`):
+
+```sh
+# Run from repo-local ./.knurl/tools or global ~/.config/knurl/tools
+./bin/knurl run pr-ready
+./bin/knurl run pr-ready --scope repo --version v2 --json
+./bin/knurl run vps-health --scope global --arg host=prod-01.example.com --arg user=ops
+```
+
+You can also target an explicit directory via `--tools-dir` (or `$KNURL_TOOLS_DIR`) or pass a direct bundle path—for example, running the bundled Phase 1/2 `examples/`:
 
 ```sh
 ./bin/knurl run repo-context --tools-dir ./examples
@@ -63,18 +72,17 @@ Execute `examples/repo-context` against the current repository:
 ./bin/knurl run ./examples/repo-context --input '{"include_tree":false}'
 ```
 
-Execute `examples/vps-health` (SSH diagnostics with host-injected `VPS_SSH_KEY_PATH`):
+Execute `examples/vps-health` (SSH diagnostics with host-injected `VPS_SSH_KEY_PATH` and optional HTTPS health endpoint check with `VPS_HEALTH_TOKEN`):
 
 ```sh
-VPS_SSH_KEY_PATH=~/.ssh/id_ed25519 ./bin/knurl run vps-health --tools-dir ./examples \
-  --arg host=prod-01.example.com --arg user=ops --arg services=nginx,caddy
+VPS_SSH_KEY_PATH=~/.ssh/id_ed25519 VPS_HEALTH_TOKEN=tok_example ./bin/knurl run vps-health \
+  --tools-dir ./examples --arg host=prod-01.example.com --arg user=ops \
+  --arg services=nginx,caddy --arg check_http_url=https://status.example.com/healthz
 ```
-
-*(Note: `knurl.http` is deferred to Phase 2, so omit `--arg check_http_url=...` in Phase 1.)*
 
 ### Connect an MCP Client (`knurl mcp`)
 
-In Phase 1, `knurl mcp` serves the **`knurl_run`** tool over stdin/stdout (writing diagnostics strictly to stderr). Add it to your MCP client configuration (Claude Desktop, Claude Code, Codex, etc.):
+In Phase 2, `knurl mcp` serves **`knurl_run`** over stdin/stdout (writing diagnostics strictly to stderr) backed by the two-tier registry (`./.knurl/tools` and `~/.config/knurl/tools`) or an optional `--tools-dir` override:
 
 ```json
 {
@@ -83,13 +91,14 @@ In Phase 1, `knurl mcp` serves the **`knurl_run`** tool over stdin/stdout (writi
       "command": "/abs/path/to/knurl/bin/knurl",
       "args": [
         "mcp",
-        "--tools-dir", "/abs/path/to/knurl/examples",
         "--workdir", "/abs/path/to/your-workspace"
       ]
     }
   }
 }
 ```
+
+Pass `"--tools-dir", "/abs/path/to/knurl/examples"` in `args` to test directly against the example bundles.
 
 ## Development Setup
 
