@@ -1,8 +1,12 @@
 package host
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/ViniTamanhao/knurl/internal/contract"
 )
@@ -11,6 +15,28 @@ const (
 	maxDiagnosticsLines = 256
 	maxDiagnosticBytes  = 64 * 1024
 )
+
+// Option configures optional dependencies or test hooks on a Host instance.
+type Option func(*Host)
+
+// WithHTTPTransport overrides the HTTP RoundTripper used by knurl.http while
+// preserving all manifest allowlist, secret injection, redirect, and byte-cap checks.
+func WithHTTPTransport(rt http.RoundTripper) Option {
+	return func(h *Host) {
+		if rt != nil {
+			h.httpTransport = rt
+		}
+	}
+}
+
+// WithHTTPLookupIP overrides DNS resolution inside the SSRF-safe HTTP dialer.
+func WithHTTPLookupIP(fn func(context.Context, string) ([]net.IPAddr, error)) Option {
+	return func(h *Host) {
+		if fn != nil {
+			h.httpLookupIP = fn
+		}
+	}
+}
 
 // Host provides capability-checked OS primitives for one tool execution.
 type Host struct {
@@ -21,6 +47,9 @@ type Host struct {
 	declaredSecrets map[string]struct{}
 	redactor        *Redactor
 	envLookup       func(string) (string, bool)
+	httpTransport   http.RoundTripper
+	ownedTransport  *http.Transport
+	httpLookupIP    func(context.Context, string) ([]net.IPAddr, error)
 	diagnostics     []string
 	diagBytes       int
 }
@@ -31,6 +60,17 @@ func New(
 	workDir string,
 	secrets map[string]string,
 	redactor *Redactor,
+) (*Host, error) {
+	return NewWithOptions(manifest, workDir, secrets, redactor)
+}
+
+// NewWithOptions constructs a Host confined to workDir with optional host hooks.
+func NewWithOptions(
+	manifest contract.Manifest,
+	workDir string,
+	secrets map[string]string,
+	redactor *Redactor,
+	opts ...Option,
 ) (*Host, error) {
 	if workDir == "" {
 		return nil, &contract.ToolError{
@@ -52,7 +92,7 @@ func New(
 	if redactor == nil {
 		redactor = NewRedactor(secrets)
 	}
-	return &Host{
+	h := &Host{
 		manifest:        manifest,
 		workDir:         workDir,
 		root:            root,
@@ -60,12 +100,33 @@ func New(
 		declaredSecrets: declared,
 		redactor:        redactor,
 		envLookup:       os.LookupEnv,
+		httpLookupIP:    net.DefaultResolver.LookupIPAddr,
 		diagnostics:     make([]string, 0),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(h)
+		}
+	}
+	if h.httpTransport == nil {
+		tr := &http.Transport{
+			Proxy:               nil,
+			DialContext:         h.ssrfSafeDialContext,
+			TLSHandshakeTimeout: 5 * time.Second,
+			MaxIdleConns:        10,
+			IdleConnTimeout:     30 * time.Second,
+		}
+		h.ownedTransport = tr
+		h.httpTransport = tr
+	}
+	return h, nil
 }
 
-// Close releases the underlying os.Root file descriptor.
+// Close releases the underlying os.Root file descriptor and idle HTTP connections.
 func (h *Host) Close() error {
+	if h.ownedTransport != nil {
+		h.ownedTransport.CloseIdleConnections()
+	}
 	if h.root != nil {
 		return h.root.Close()
 	}

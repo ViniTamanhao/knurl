@@ -2,14 +2,18 @@ package runtime_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ViniTamanhao/knurl/internal/contract"
+	"github.com/ViniTamanhao/knurl/internal/host"
 	"github.com/ViniTamanhao/knurl/internal/runtime"
 )
 
@@ -288,5 +292,97 @@ func main() {
 	}
 	if !strings.Contains(leakRes.Error.Message, "[REDACTED:VPS_SSH_KEY_PATH]") {
 		t.Fatalf("expected [REDACTED:VPS_SSH_KEY_PATH] in error message, got %q", leakRes.Error.Message)
+	}
+}
+
+func TestExampleVPSHealthLiveHTTP(t *testing.T) {
+	manifest, src := loadExampleBundleForRuntimeTest(t, "vps-health")
+
+	const secretKeyPath = "/fake/secret/id_ed25519_http_test"
+	const healthToken = "vps-health-bearer-token-xyz"
+
+	stubDir := t.TempDir()
+	stubBin := filepath.Join(stubDir, "ssh")
+	stubSrc := filepath.Join(stubDir, "main.go")
+	stubCode := `package main
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+func main() {
+	last := os.Args[len(os.Args)-1]
+	if strings.HasPrefix(last, "uname -srm") {
+		fmt.Print("Linux 6.8.0-45-generic x86_64\n 14:22:01 up 18 days,  3:14,  1 user,  load average: 0.42, 0.38, 0.31\n               total        used        free      shared  buff/cache   available\nMem:            4096        1024        2048          24        1024        3000\nSwap:              0           0           0\nFilesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/vda1         41152832  18930304  20112416      49% /\n")
+		return
+	}
+	fmt.Fprintln(os.Stderr, "unexpected ssh call")
+	os.Exit(2)
+}
+`
+	if err := os.WriteFile(stubSrc, []byte(stubCode), 0o600); err != nil {
+		t.Fatalf("write ssh stub: %v", err)
+	}
+	if out, buildErr := exec.Command("go", "build", "-o", stubBin, stubSrc).CombinedOutput(); buildErr != nil {
+		t.Fatalf("build ssh stub: %v\n%s", buildErr, out)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var gotAuth atomic.Value
+	statusSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer statusSrv.Close()
+
+	rt := &advRoutingTransport{
+		routes: map[string]*httptest.Server{
+			"status.example.com": statusSrv,
+		},
+	}
+
+	input := map[string]any{
+		"host":           "prod-01.example.com",
+		"user":           "ops",
+		"check_http_url": "https://status.example.com/healthz",
+	}
+	if err := contract.ValidateInput(manifest, input); err != nil {
+		t.Fatalf("ValidateInput: %v", err)
+	}
+
+	resp := runtime.ExecuteInProcessWithConfig(
+		context.Background(),
+		contract.WorkerRequest{
+			Manifest:  manifest,
+			Source:    src,
+			WorkDir:   t.TempDir(),
+			Input:     input,
+			TimeoutMs: 5000,
+			Secrets: map[string]string{
+				"VPS_SSH_KEY_PATH": secretKeyPath,
+				"VPS_HEALTH_TOKEN": healthToken,
+			},
+		},
+		runtime.ProcessConfig{
+			HostOptions: []host.Option{host.WithHTTPTransport(rt)},
+		},
+	)
+	if !resp.OK {
+		t.Fatalf("vps-health live HTTP failed: %+v", resp.Error)
+	}
+	if valErr := contract.ValidateOutput(manifest, resp.Output); valErr != nil {
+		t.Fatalf("ValidateOutput: %v", valErr)
+	}
+	if auth, _ := gotAuth.Load().(string); auth != "Bearer "+healthToken {
+		t.Fatalf("expected Authorization header %q, got %q", "Bearer "+healthToken, auth)
+	}
+	httpCheck, _ := resp.Output["http_check"].(map[string]any)
+	if httpCheck == nil || httpCheck["status"] != float64(200) || httpCheck["ok"] != true {
+		t.Fatalf("unexpected http_check output: %+v", resp.Output["http_check"])
+	}
+	if healthy, _ := resp.Output["healthy"].(bool); !healthy {
+		t.Fatalf("expected healthy=true, got %+v", resp.Output)
 	}
 }

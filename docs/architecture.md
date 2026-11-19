@@ -43,11 +43,12 @@ flowchart LR
 ### IPC & Resource Control Invariants
 
 - **Framing & Caps:** Single-request / single-response NDJSON over dedicated stdin/stdout pipes (`WorkerRequest` -> `WorkerResponse`), capped at **2 MiB** (`MaxIPCFrameBytes`) per JSON frame and **64 KiB** (`MaxWorkerStderrBytes`) on captured worker stderr. Oversized requests or responses fail closed with `LIMIT_EXCEEDED`.
+- **Memory, Stack & Unix Resource Limits:** `_worker` disables core dumps (`RLIMIT_CORE=0`) and caps open file descriptors (`RLIMIT_NOFILE<=256`) on Unix, applies `debug.SetMemoryLimit(128 MiB)`, monitors active Go heap growth with a `64 MiB` delta watchdog (`LIMIT_EXCEEDED`), and enforces `goja.SetMaxCallStackSize(1024)`.
 - **Sanitized Worker Environment:** `knurl _worker` is spawned via `os.Executable()` with only a minimal allowlisted environment (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM`, `TZ`)—arbitrary parent environment variables and secrets are never inherited into the worker process environment.
 - **Zero raw JS stdout:** Tool JavaScript has no `console` or `process.stdout` access. Only `knurl.log(msg)` emits diagnostic lines (capped at 256 lines / 64 KiB), captured inside `WorkerResponse.Diagnostics`.
 - **Clean MCP stdio:** In `knurl mcp`, MCP protocol traffic owns `os.Stdout`. The `_worker` runs with its own dedicated pipes; any parent diagnostics (`slog`) go strictly to `os.Stderr`.
-- **Deterministic cancellation & teardown:** Parent enforces `context.WithTimeout` (tool `timeout_ms`, default 30,000 ms, max 120,000 ms). Inside `_worker`, a watchdog calls `vm.Interrupt` on context cancellation; at the OS level on Unix, `Setpgid: true` isolates the worker and its `knurl.exec` children into a dedicated process group so timeout cancellation sends `SIGKILL` to `-pgid` (with a `250 ms` `WaitDelay`) and guarantees zero orphaned child processes.
-- **Dual-layer secret isolation & redaction:** Only secret values declared in `manifest.secrets` are resolved on the parent and transmitted in memory inside the stdin `WorkerRequest` frame (never written to disk, CLI args, or worker env). Both `_worker` and the parent boundary scrub resolved secret values (raw, base64, URL-encoded variants, min length 4) across `Output`, `Error`, `Diagnostics`, and `knurl.exec` streams before returning.
+- **Deterministic cancellation & teardown:** Parent enforces `context.WithTimeout` (tool `timeout_ms`, default 30,000 ms, max 120,000 ms) plus a `350 ms` worker teardown grace window. Inside `_worker`, a watchdog calls `vm.Interrupt` on context cancellation or heap limit breach; `Setpgid: true` isolates `_worker` and each `knurl.exec` child group so `SIGTERM` triggers clean child-group teardown (`SIGKILL` to `-pgid`) followed by parent `SIGKILL` fallback—guaranteeing zero orphaned child processes.
+- **Dual-layer secret isolation & redaction:** Only secret values declared in `manifest.secrets` are resolved on the parent and transmitted in memory inside the stdin `WorkerRequest` frame (never written to disk, CLI args, or worker env). Both `_worker` and the parent boundary scrub resolved secret values (raw, multi-line, JSON-escaped, base64, URL-encoded variants, trimmed min length 4) across `Output`, `Error`, `Diagnostics`, `knurl.exec` streams, `knurl.git` output, and `knurl.http` responses before returning while preserving valid JSON.
 
 ## 3. Two-Tier Registry & Resolution Order
 
@@ -55,14 +56,16 @@ flowchart LR
 
 | Tier | Location | Precedence | Purpose |
 | :--- | :--- | :--- | :--- |
+| **Override** | `--tools-dir <dir>` (`$KNURL_TOOLS_DIR`) or direct path | Explicit override | Local dev and `examples/` bundle execution without touching active user/repo tiers. |
 | **Repo-local** | `./.knurl/tools/<name>/v<N>/` | 1st (default `auto` scope) | Project-specific workflows (e.g., `pr-ready`); committable to Git. |
-| **Global** | `$KNURL_HOME/tools/<name>/v<N>/` or `$XDG_CONFIG_HOME/knurl/tools/<name>/v<N>/` (fallback `~/.config/knurl/tools/`) | 2nd | Personal ops/utility tools (e.g., `vps-health`). |
+| **Global** | `$KNURL_HOME/tools/<name>/v<N>/`, `$KNURL_CONFIG_DIR/tools/`, or `$XDG_CONFIG_HOME/knurl/tools/` (fallback `~/.config/knurl/tools/`) | 2nd | Personal ops/utility tools (e.g., `vps-health`). |
 | **Staging** | `$KNURL_HOME/staging/<proposal-id>/` or `~/.config/knurl/staging/<proposal-id>/` | Never directly executable | Unapproved proposals and repairs awaiting `knurl approve`. |
 
-When resolving a tool in `auto` scope:
-1. Walk upward from `cwd` looking for `.knurl/tools/<name>/active.json`. Stop at the repository boundary (directory containing `.git`) or filesystem root.
-2. If not found, check the global tools directory (`~/.config/knurl/tools/<name>/active.json`).
-3. Passing explicit `--scope repo` or `--scope global` bypasses fallback.
+When resolving a tool in `auto` scope (without `--tools-dir`):
+1. Walk upward from `workdir` (`cwd`) looking for `.knurl/tools/<name>/`. Stop at the repository boundary (directory containing `.git` directory or worktree/submodule file) or filesystem root.
+2. If found, resolve `active.json` (or highest `v<N>` if absent, or flat layout) confined via `os.Root`; malformed repo bundles fail closed without falling back.
+3. If absent, check the global tools directory.
+4. Passing explicit `--scope repo` or `--scope global` bypasses fallback; `--version <N|vN>` selects a specific immutable `v<N>/` version.
 
 ## 4. Proposal, Approval & Rollback Flow
 

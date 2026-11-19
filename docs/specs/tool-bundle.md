@@ -4,8 +4,8 @@ This specification defines the on-disk directory structure, versioning rules, pr
 
 ## 1. Tool Naming & Version Numbers
 
-- **Tool name:** `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, length 2–64 characters (e.g., `repo-context`, `pr-ready`, `vps-health`).
-- **Version directory:** `v<N>` where `<N>` is a monotonically increasing positive integer (`v1`, `v2`, ...). Published version directories are immutable; repairs always increment `N`.
+- **Tool name:** `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, length 2–64 characters (e.g., `repo-context`, `pr-ready`, `vps-health`). Invalid, empty, or path-traversal names (`../evil`, `/abs`, `a/b`) fail closed with `TOOL_NOT_FOUND` before touching the filesystem.
+- **Version directory:** `v<N>` where `<N>` is a monotonically increasing positive integer (`v1`, `v2`, ...). Published version directories are immutable real directories (never symlinks); `manifest.version` must match `<N>` (`INVALID_MANIFEST` on mismatch); repairs always increment `N`.
 
 ## 2. Active Registry Directory Layout
 
@@ -26,6 +26,8 @@ tools/
       tests.json
       approval.json
 ```
+
+Flat unversioned bundle directories (containing `manifest.json` and `tool.js` directly, such as `examples/repo-context/` or direct path invocations) are also supported for local development and `--tools-dir` overrides.
 
 ### Bundle Files
 
@@ -49,6 +51,7 @@ tools/
 
 - `previous_version` is `0` (or omitted) when only one version has been approved.
 - `active.json` MUST be updated via write-to-temp-file in the same directory, `fsync`, and atomic `os.Rename` (no symlinks; portable across Windows and Unix).
+- When a tool directory contains versioned `v<N>/` subdirectories without an `active.json` file, the highest valid `v<N>` directory is selected as the active version. When `active.json` exists, `active_version` (`>= 1`) selects the active directory directly (failing closed with `INVALID_MANIFEST` if malformed or `VERSION_NOT_FOUND` if the target `v<N>/` is missing).
 
 ### `approval.json` Format
 
@@ -72,14 +75,20 @@ tools/
 ## 3. Tier Resolution & Precedence
 
 Base paths:
-- **Repo-local tier:** `./.knurl/tools/` discovered by walking upward from `cwd` until the first directory containing `.knurl/tools/` or a `.git` repository root (stopping at the `.git` boundary or filesystem root).
-- **Global tier:** `$KNURL_HOME/tools/` if `KNURL_HOME` is set; otherwise `$XDG_CONFIG_HOME/knurl/tools/` (default `~/.config/knurl/tools/`).
+- **Repo-local tier:** `./.knurl/tools/` discovered by walking upward from `workdir` (`cwd`) until the first directory containing `.knurl/tools/` or a `.git` repository boundary (supporting both `.git` directories and `.git` worktree/submodule files, stopping at `.git` or the filesystem root).
+- **Global tier:** resolved in order:
+  1. `$KNURL_HOME/tools/` (when `KNURL_HOME` is non-empty)
+  2. `$KNURL_CONFIG_DIR/tools/` (when `KNURL_CONFIG_DIR` is non-empty)
+  3. `$XDG_CONFIG_HOME/knurl/tools/` (when `XDG_CONFIG_HOME` is non-empty)
+  4. `~/.config/knurl/tools/`
+- **Override tier (`override`):** explicit `--tools-dir <dir>` (`KNURL_TOOLS_DIR`) or direct bundle directory paths (`knurl run ./path/to/bundle`). When an override directory is configured, `auto` lookup resolves strictly inside that override directory without falling back to the user's global tier.
 
 Lookup behavior for `scope`:
-- `auto` (default for `run` and `inspect`): search **repo-local** first; if absent, fall back to **global**. Repo-local tools shadow global tools of the same name.
+- `auto` (default for `run` and `inspect`): search **repo-local** first; if the tool directory is absent, fall back to **global**. Repo-local tools shadow global tools of the same name (malformed repo-local bundles fail closed without falling back to global).
 - `repo`: search repo-local only.
 - `global`: search global only.
-- `all` (for `discover`): list tools from both tiers with explicit `scope` labels (`repo` and `global`).
+- `override`: search configured override directory only.
+- `all` (for `discover` / `List`): list tools from both tiers with explicit `scope` labels (`repo` and `global`).
 
 ## 4. Rollback Semantics
 

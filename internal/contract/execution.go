@@ -80,6 +80,8 @@ const (
 	ScopeAuto Scope = "auto"
 	// ScopeAll searches across both repo-local and global tiers.
 	ScopeAll Scope = "all"
+	// ScopeOverride matches an explicit --tools-dir override or direct bundle path.
+	ScopeOverride Scope = "override"
 )
 
 // ExecutionRequest describes a host request to execute an approved tool.

@@ -20,7 +20,16 @@ const (
 	MaxGitLogLimit = 100
 	// MaxGitDiffPatchBytes is the maximum patch text retained by knurl.git.diff.
 	MaxGitDiffPatchBytes = 262144
+
+	maxGitRefLength = 256
 )
+
+var hardenedGitGlobalArgs = []string{
+	"--no-pager",
+	"-c", "core.fsmonitor=false",
+	"-c", "core.quotepath=false",
+	"-c", "protocol.ext.allow=never",
+}
 
 // GitLogOptions configures knurl.git.log.
 type GitLogOptions struct {
@@ -59,16 +68,31 @@ func (h *Host) ensureGitRepo(ctx context.Context) error {
 	return nil
 }
 
-func (h *Host) runGitRaw(ctx context.Context, args ...string) ([]byte, int, error) {
+func (h *Host) buildGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	baseEnv := SanitizedBaseEnv(h.envLookup)
-	baseEnv = append(baseEnv, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
+	baseEnv = append(
+		baseEnv,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"LC_ALL=C",
+	)
+
+	fullArgs := make([]string, 0, len(hardenedGitGlobalArgs)+len(args))
+	fullArgs = append(fullArgs, hardenedGitGlobalArgs...)
+	fullArgs = append(fullArgs, args...)
 
 	//nolint:gosec // G204: fixed git binary invoked with host-validated read-only flags.
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", fullArgs...)
 	cmd.Dir = h.workDir
 	cmd.Env = baseEnv
 	cmd.Stdin = bytes.NewReader(nil)
 	ConfigureProcessGroup(cmd)
+	return cmd
+}
+
+func (h *Host) runGitRaw(ctx context.Context, args ...string) ([]byte, int, error) {
+	cmd := h.buildGitCmd(ctx, args...)
 
 	stdout := NewLimitedBuffer(MaxExecStreamBytes)
 	stderr := NewLimitedBuffer(MaxExecStreamBytes)
@@ -96,15 +120,7 @@ func (h *Host) runGitRaw(ctx context.Context, args ...string) ([]byte, int, erro
 }
 
 func (h *Host) runGitBounded(ctx context.Context, maxBytes int, args ...string) ([]byte, bool, int, string, error) {
-	baseEnv := SanitizedBaseEnv(h.envLookup)
-	baseEnv = append(baseEnv, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
-
-	//nolint:gosec // G204: fixed git binary invoked with host-validated read-only flags.
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = h.workDir
-	cmd.Env = baseEnv
-	cmd.Stdin = bytes.NewReader(nil)
-	ConfigureProcessGroup(cmd)
+	cmd := h.buildGitCmd(ctx, args...)
 
 	stdout := NewLimitedBuffer(maxBytes)
 	stderr := NewLimitedBuffer(MaxExecStreamBytes)
@@ -113,7 +129,7 @@ func (h *Host) runGitBounded(ctx context.Context, maxBytes int, args ...string) 
 
 	err := cmd.Run()
 	if err == nil {
-		return stdout.Bytes(), stdout.Truncated(), 0, stderr.String(), nil
+		return stdout.Bytes(), stdout.Truncated(), 0, h.redactor.String(stderr.String()), nil
 	}
 	if ctx.Err() != nil {
 		return nil, false, -1, "", &contract.ToolError{
@@ -123,7 +139,7 @@ func (h *Host) runGitBounded(ctx context.Context, maxBytes int, args ...string) 
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return stdout.Bytes(), stdout.Truncated(), exitErr.ExitCode(), stderr.String(), nil
+		return stdout.Bytes(), stdout.Truncated(), exitErr.ExitCode(), h.redactor.String(stderr.String()), nil
 	}
 	return nil, false, -1, "", &contract.ToolError{
 		Code:    contract.ErrExecFailed,
@@ -135,10 +151,22 @@ func validateGitRef(ref string) error {
 	if ref == "" {
 		return nil
 	}
-	if strings.HasPrefix(ref, "-") {
+	if len(ref) > maxGitRefLength {
 		return &contract.ToolError{
 			Code:    contract.ErrInvalidArgument,
-			Message: fmt.Sprintf("invalid git ref %q: must not begin with '-'", ref),
+			Message: fmt.Sprintf("invalid git ref %q: exceeds %d byte limit", ref, maxGitRefLength),
+		}
+	}
+	if strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, ":") {
+		return &contract.ToolError{
+			Code:    contract.ErrInvalidArgument,
+			Message: fmt.Sprintf("invalid git ref %q: must not begin with '-' or ':'", ref),
+		}
+	}
+	if strings.ContainsRune(ref, '\\') {
+		return &contract.ToolError{
+			Code:    contract.ErrInvalidArgument,
+			Message: fmt.Sprintf("invalid git ref %q: must not contain backslashes", ref),
 		}
 	}
 	for i := 0; i < len(ref); i++ {
@@ -151,6 +179,19 @@ func validateGitRef(ref string) error {
 		}
 	}
 	return nil
+}
+
+func validateGitPath(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(raw, "-") || strings.HasPrefix(raw, ":") {
+		return "", &contract.ToolError{
+			Code:    contract.ErrInvalidArgument,
+			Message: fmt.Sprintf("invalid git path %q: must not begin with '-' or ':'", raw),
+		}
+	}
+	return ValidateRelativePath(raw)
 }
 
 // GitBranch returns current branch, detached state, HEAD commit SHA, and upstream tracking branch.
@@ -199,7 +240,7 @@ func (h *Host) GitStatus(ctx context.Context) (contract.GitStatus, error) {
 		return contract.GitStatus{}, err
 	}
 
-	out, code, err := h.runGitRaw(ctx, "-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	out, code, err := h.runGitRaw(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return contract.GitStatus{}, err
 	}
@@ -294,13 +335,9 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 	if err := validateGitRef(opts.Ref); err != nil {
 		return nil, err
 	}
-	var cleanPath string
-	if opts.Path != "" {
-		var pathErr error
-		cleanPath, pathErr = ValidateRelativePath(opts.Path)
-		if pathErr != nil {
-			return nil, pathErr
-		}
+	cleanPath, pathErr := validateGitPath(opts.Path)
+	if pathErr != nil {
+		return nil, pathErr
 	}
 
 	if opts.Ref == "" {
@@ -314,7 +351,6 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 	}
 
 	args := []string{
-		"-c", "core.quotepath=false",
 		"log",
 		"-n", strconv.Itoa(limit),
 		"--format=%H%x1f%h%x1f%an%x1f%cI%x1f%s%x1e",
@@ -322,8 +358,9 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 	if opts.Ref != "" {
 		args = append(args, opts.Ref)
 	}
+	args = append(args, "--")
 	if cleanPath != "" {
-		args = append(args, "--", cleanPath)
+		args = append(args, cleanPath)
 	}
 
 	out, _, code, stderr, err := h.runGitBounded(ctx, MaxExecStreamBytes, args...)
@@ -355,9 +392,9 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 		commits = append(commits, contract.GitCommit{
 			Hash:      fields[0],
 			ShortHash: fields[1],
-			Author:    fields[2],
+			Author:    h.redactor.String(fields[2]),
 			Date:      dateUTC,
-			Subject:   fields[4],
+			Subject:   h.redactor.String(fields[4]),
 		})
 	}
 	return commits, nil
@@ -386,13 +423,9 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 	if err := validateGitRef(opts.Head); err != nil {
 		return contract.GitDiff{}, err
 	}
-	var cleanPath string
-	if opts.Path != "" {
-		var pathErr error
-		cleanPath, pathErr = ValidateRelativePath(opts.Path)
-		if pathErr != nil {
-			return contract.GitDiff{}, pathErr
-		}
+	cleanPath, pathErr := validateGitPath(opts.Path)
+	if pathErr != nil {
+		return contract.GitDiff{}, pathErr
 	}
 
 	targetArgs := make([]string, 0, 4)
@@ -405,11 +438,12 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 		}
 	}
 
-	numstatArgs := make([]string, 0, 5+len(targetArgs))
-	numstatArgs = append(numstatArgs, "-c", "core.quotepath=false", "diff", "--numstat", "-z")
+	numstatArgs := make([]string, 0, 7+len(targetArgs))
+	numstatArgs = append(numstatArgs, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z")
 	numstatArgs = append(numstatArgs, targetArgs...)
+	numstatArgs = append(numstatArgs, "--")
 	if cleanPath != "" {
-		numstatArgs = append(numstatArgs, "--", cleanPath)
+		numstatArgs = append(numstatArgs, cleanPath)
 	}
 
 	numOut, _, numCode, numStderr, err := h.runGitBounded(ctx, MaxExecStreamBytes, numstatArgs...)
@@ -428,11 +462,12 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 	}
 
 	if !opts.StatOnly {
-		patchArgs := make([]string, 0, 3+len(targetArgs))
-		patchArgs = append(patchArgs, "-c", "core.quotepath=false", "diff")
+		patchArgs := make([]string, 0, 5+len(targetArgs))
+		patchArgs = append(patchArgs, "diff", "--no-ext-diff", "--no-textconv")
 		patchArgs = append(patchArgs, targetArgs...)
+		patchArgs = append(patchArgs, "--")
 		if cleanPath != "" {
-			patchArgs = append(patchArgs, "--", cleanPath)
+			patchArgs = append(patchArgs, cleanPath)
 		}
 		patchOut, truncated, patchCode, patchStderr, patchErr := h.runGitBounded(ctx, MaxGitDiffPatchBytes, patchArgs...)
 		if patchErr != nil {
@@ -444,7 +479,7 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 				Message: h.redactor.String(fmt.Sprintf("git diff patch failed: %s", strings.TrimSpace(patchStderr))),
 			}
 		}
-		diff.Patch = string(patchOut)
+		diff.Patch = h.redactor.String(string(patchOut))
 		diff.Truncated = truncated
 	}
 

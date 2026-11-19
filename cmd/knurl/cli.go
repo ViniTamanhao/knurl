@@ -25,22 +25,24 @@ const runHelpText = `Usage:
   knurl run <tool-name-or-path> [flags]
 
 Flags:
-  --input <json>       JSON object input passed to main(input)
-  --arg <key=value>    Set a typed input field (repeatable)
-  --tools-dir <dir>    Directory containing tool bundles (default $KNURL_TOOLS_DIR or ./examples)
-  --workdir <dir>      Workspace directory exposed to tool execution (default current directory)
-  --timeout-ms <ms>    Override execution timeout in milliseconds (100..120000)
-  --json               Print full ExecutionResult JSON envelope
-  -h, --help           Show help for knurl run
+  --input <json>              JSON object input passed to main(input)
+  --arg <key=value>           Set a typed input field (repeatable)
+  --scope <auto|repo|global>  Registry scope to resolve the tool from (default auto)
+  --version <N|vN>            Explicit tool version to execute
+  --tools-dir <dir>           Override registry directory (default $KNURL_TOOLS_DIR or two-tier lookup)
+  --workdir <dir>             Workspace directory exposed to tool execution (default current directory)
+  --timeout-ms <ms>           Override execution timeout in milliseconds (100..120000)
+  --json                      Print full ExecutionResult JSON envelope
+  -h, --help                  Show help for knurl run
 `
 
 const mcpHelpText = `Usage:
   knurl mcp [flags]
 
 Flags:
-  --tools-dir <dir>    Directory containing tool bundles (default $KNURL_TOOLS_DIR or ./examples)
-  --workdir <dir>      Workspace directory exposed to tool execution (default current directory)
-  -h, --help           Show help for knurl mcp
+  --tools-dir <dir>           Override registry directory (default $KNURL_TOOLS_DIR or two-tier lookup)
+  --workdir <dir>             Workspace directory exposed to tool execution (default current directory)
+  -h, --help                  Show help for knurl mcp
 `
 
 type runCmdOptions struct {
@@ -48,6 +50,8 @@ type runCmdOptions struct {
 	inputJSON string
 	hasInput  bool
 	rawArgs   []string
+	scope     contract.Scope
+	version   int
 	toolsDir  string
 	workDir   string
 	timeoutMs int
@@ -56,10 +60,7 @@ type runCmdOptions struct {
 }
 
 func defaultToolsDir() string {
-	if envDir := os.Getenv("KNURL_TOOLS_DIR"); envDir != "" {
-		return envDir
-	}
-	return registry.DefaultToolsDir
+	return os.Getenv("KNURL_TOOLS_DIR")
 }
 
 func runToolCmd(args []string, stdout, stderr io.Writer) int {
@@ -90,10 +91,18 @@ func runToolCmd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	loader := &registry.Loader{ToolsDir: toolsDir}
-	bundle, loadErr := loader.Load(opts.target)
+	scope := opts.scope
+	if scope == "" {
+		scope = contract.ScopeAuto
+	}
+
+	reg := &registry.Registry{
+		WorkDir:     workDir,
+		OverrideDir: toolsDir,
+	}
+	bundle, loadErr := reg.LoadTarget(opts.target, scope, opts.version)
 	if loadErr != nil {
-		return emitFailure(stderr, opts.target, 0, contract.ScopeAuto, asToolError(loadErr), opts.jsonOut)
+		return emitFailure(stderr, opts.target, opts.version, scope, asToolError(loadErr), opts.jsonOut)
 	}
 
 	inputMap, buildErr := buildRunInput(bundle.Manifest, opts)
@@ -182,7 +191,10 @@ func runMCPCmd(args []string, stdout, stderr io.Writer) int {
 		Level: slog.LevelWarn,
 	}))
 	server := mcpserver.NewServer(mcpserver.Config{
-		Loader:     &registry.Loader{ToolsDir: toolsDir},
+		Registry: &registry.Registry{
+			WorkDir:     workDir,
+			OverrideDir: toolsDir,
+		},
 		Supervisor: &runtime.Supervisor{},
 		WorkDir:    workDir,
 		Version:    version,
@@ -236,6 +248,40 @@ func parseRunArgs(args []string) (runCmdOptions, error) {
 				i = nextIdx
 			case strings.HasPrefix(arg, "--arg="):
 				opts.rawArgs = append(opts.rawArgs, strings.TrimPrefix(arg, "--arg="))
+			case arg == "--scope":
+				val, nextIdx, err := nextFlagValue(args, i, "--scope")
+				if err != nil {
+					return opts, err
+				}
+				parsedScope, scopeErr := parseScopeFlag(val)
+				if scopeErr != nil {
+					return opts, scopeErr
+				}
+				opts.scope = parsedScope
+				i = nextIdx
+			case strings.HasPrefix(arg, "--scope="):
+				parsedScope, scopeErr := parseScopeFlag(strings.TrimPrefix(arg, "--scope="))
+				if scopeErr != nil {
+					return opts, scopeErr
+				}
+				opts.scope = parsedScope
+			case arg == "--version":
+				val, nextIdx, err := nextFlagValue(args, i, "--version")
+				if err != nil {
+					return opts, err
+				}
+				parsedVer, verErr := parseVersionFlag(val)
+				if verErr != nil {
+					return opts, verErr
+				}
+				opts.version = parsedVer
+				i = nextIdx
+			case strings.HasPrefix(arg, "--version="):
+				parsedVer, verErr := parseVersionFlag(strings.TrimPrefix(arg, "--version="))
+				if verErr != nil {
+					return opts, verErr
+				}
+				opts.version = parsedVer
 			case arg == "--tools-dir":
 				val, nextIdx, err := nextFlagValue(args, i, "--tools-dir")
 				if err != nil {
@@ -298,6 +344,32 @@ func parseTimeoutFlag(raw string) (int, error) {
 		return 0, fmt.Errorf("invalid --timeout-ms %q (expected integer 100..%d)", raw, contract.MaxTimeoutMs)
 	}
 	return ms, nil
+}
+
+func parseScopeFlag(raw string) (contract.Scope, error) {
+	switch contract.Scope(raw) {
+	case contract.ScopeAuto, contract.ScopeRepo, contract.ScopeGlobal:
+		return contract.Scope(raw), nil
+	default:
+		return "", fmt.Errorf("invalid --scope %q (expected auto, repo, or global)", raw)
+	}
+}
+
+func parseVersionFlag(raw string) (int, error) {
+	s := strings.TrimPrefix(raw, "v")
+	if s == "" || strings.HasPrefix(s, "0") {
+		return 0, fmt.Errorf("invalid --version %q (expected positive integer N or vN)", raw)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, fmt.Errorf("invalid --version %q (expected positive integer N or vN)", raw)
+		}
+	}
+	ver, err := strconv.Atoi(s)
+	if err != nil || ver < 1 {
+		return 0, fmt.Errorf("invalid --version %q (expected positive integer N or vN)", raw)
+	}
+	return ver, nil
 }
 
 func buildRunInput(manifest contract.Manifest, opts runCmdOptions) (map[string]any, error) {

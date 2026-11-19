@@ -21,7 +21,7 @@ Every architectural and UX choice in v0 is validated against three concrete work
   - Contract-validated exit-gate bundles in `examples/repo-context/` and `examples/vps-health/`.
 - **Exit Gate:** `mise run check` passes with zero warnings/errors; example bundles validate strictly against JSON Schemas and semantic rules.
 
-### Phase 1 (Days 3–5): Weekend Kill-or-Commit Execution Slice *(Implemented)*
+### Phase 1 (Days 3–5): Weekend Kill-or-Commit Execution Slice *(Completed)*
 - **Deliverables:**
   - `knurl _worker` isolated subprocess with 2 MiB NDJSON stdin/stdout IPC, sanitized worker environment, `context.WithTimeout`, `goja` interrupt watchdog, and Unix `-pgid` process-group cleanup.
   - Synchronous `dop251/goja` runtime host bindings (`internal/runtime`) with sandbox hygiene checks and structured canonical error propagation.
@@ -29,11 +29,12 @@ Every architectural and UX choice in v0 is validated against three concrete work
   - Runtime Draft 2020-12 input/output JSON Schema validation (`INVALID_INPUT` / `INVALID_OUTPUT`), minimal Phase 1 bundle loader (`internal/registry`), `knurl run <tool-name-or-path>` CLI, and minimal stdio MCP server (`knurl mcp`) exposing `knurl_run`.
 - **Exit Gate (Kill-or-Commit):** End-to-end execution of `examples/repo-context` and `examples/vps-health` through both CLI and MCP stdio. Dogfood for 2–3 days before committing to Phases 2–4.
 
-### Phase 2 (Days 6–9): Two-Tier Registry, `knurl.http` & Adversarial Hardening
+### Phase 2 (Days 6–9): Two-Tier Registry, `knurl.http` & Adversarial Hardening *(Implemented)*
 - **Deliverables:**
-  - Two-tier filesystem registry (`./.knurl/tools` walking upward to `.git` + `~/.config/knurl/tools`), `active.json` atomic pointer resolution.
-  - Outbound `knurl.http` (`get`, `post`) host primitive with HTTPS enforcement, SSRF/private-IP blocking, domain/path allowlisting, and redirect secret-stripping.
-  - Expanded adversarial sandbox security test suite (SSRF bypasses, symlink races, flag/shell injection, secret exfiltration, runaway loops, child-process leaks).
+  - Two-tier filesystem registry (`./.knurl/tools` walking upward to `.git` dir/worktree file + `$KNURL_HOME` / `$KNURL_CONFIG_DIR` / `$XDG_CONFIG_HOME` / `~/.config/knurl/tools`), `active.json` pointer / latest `v<N>` resolution, `override` (`--tools-dir` / direct path) support, `--scope` / `--version` CLI flags, and `Resolve` / `LoadVersion` / `List` APIs wired into `knurl run` and `knurl mcp`.
+  - Complete domain-allowlisted synchronous `knurl.http` (`get`, `post`) with HTTPS enforcement, SSRF literal/DNS-CIDR blocking + direct-IP dialing, boundary-aware `path_prefixes`, `CheckRedirect` blocking cross-domain / HTTPS->HTTP / disallowed hops, redirect secret-header stripping, and 1 MiB body caps.
+  - Hardened `knurl.fs`, `knurl.git`, and `knurl.exec` (disjoint glob pre-checks, literal glob prefix symlink checks, `--no-ext-diff` / `--no-textconv` / `--` git hardening, `\A(?:...)\z` RE2 anchoring, dynamic-linker env blocklist), `_worker` memory/stack/rlimit safeguards (`RLIMIT_CORE=0`, `debug.SetMemoryLimit`, active heap watchdog, `SetMaxCallStackSize`), graceful-then-forced `-pgid` cleanup, and multi-line/JSON-safe secret redaction.
+  - Automated 10-category adversarial security & sandbox test suite (`internal/host/security_test.go`, `internal/runtime/adversarial_test.go`) plus live TLS `httptest.Server` integration for `examples/vps-health`.
 - **Exit Gate:** All adversarial security tests pass under `go test -race ./...`; zero secret leakage across failure paths.
 
 ### Phase 3 (Days 10–14): Staging, Approval Gate, Rollback & Full MCP Surface

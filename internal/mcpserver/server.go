@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"time"
@@ -15,25 +14,34 @@ import (
 	"github.com/ViniTamanhao/knurl/internal/runtime"
 )
 
-// Config configures the Phase 1 MCP server.
+// Config configures the stdio MCP server.
 type Config struct {
-	Loader     *registry.Loader
+	Registry   *registry.Registry
 	Supervisor *runtime.Supervisor
 	WorkDir    string
 	Version    string
 	Logger     *slog.Logger
 }
 
-// NewServer constructs a stateless MCP server exposing only knurl_run in Phase 1.
+// NewServer constructs a stateless MCP server exposing knurl_run wired to the
+// two-tier registry.
 func NewServer(cfg Config) *mcp.Server {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	loader := cfg.Loader
-	if loader == nil {
-		loader = &registry.Loader{}
+
+	var reg *registry.Registry
+	if cfg.Registry == nil {
+		reg = &registry.Registry{WorkDir: cfg.WorkDir}
+	} else {
+		cloned := *cfg.Registry
+		if cloned.WorkDir == "" && cfg.WorkDir != "" {
+			cloned.WorkDir = cfg.WorkDir
+		}
+		reg = &cloned
 	}
+
 	supervisor := cfg.Supervisor
 	if supervisor == nil {
 		supervisor = &runtime.Supervisor{}
@@ -67,34 +75,28 @@ func NewServer(cfg Config) *mcp.Server {
 		if scope == "" {
 			scope = contract.ScopeAuto
 		}
-		failResp := func(version int, resScope contract.Scope, err error) (*mcp.CallToolResult, contract.RunResponse, error) {
+		failResp := func(versionNum int, resScope contract.Scope, err error) (*mcp.CallToolResult, contract.RunResponse, error) {
 			return &mcp.CallToolResult{IsError: true}, contract.RunResponse{
 				OK:         false,
 				Tool:       req.Name,
-				Version:    version,
+				Version:    versionNum,
 				Scope:      resScope,
 				DurationMs: time.Since(start).Milliseconds(),
 				Error:      asToolError(err),
 			}, nil
 		}
 
-		if scope == contract.ScopeGlobal {
-			return failResp(0, contract.ScopeGlobal, &contract.ToolError{
-				Code:    contract.ErrToolNotFound,
-				Message: fmt.Sprintf("tool %q not found in global scope", req.Name),
-			})
+		var (
+			bundle  *registry.Bundle
+			loadErr error
+		)
+		if req.Version > 0 {
+			bundle, loadErr = reg.LoadVersion(req.Name, req.Version, scope)
+		} else {
+			bundle, loadErr = reg.Resolve(req.Name, scope)
 		}
-
-		bundle, loadErr := loader.LoadByName(req.Name)
 		if loadErr != nil {
-			return failResp(0, scope, loadErr)
-		}
-
-		if req.Version > 0 && req.Version != bundle.Version {
-			return failResp(req.Version, bundle.Scope, &contract.ToolError{
-				Code:    contract.ErrVersionNotFound,
-				Message: fmt.Sprintf("tool %q version v%d not found (active: v%d)", req.Name, req.Version, bundle.Version),
-			})
+			return failResp(req.Version, scope, loadErr)
 		}
 
 		res := supervisor.ExecuteBundle(

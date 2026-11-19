@@ -1,7 +1,9 @@
 package host
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"sort"
 	"strings"
@@ -17,8 +19,9 @@ type redactNeedle struct {
 	secretName  string
 }
 
-// Redactor scrubs resolved secret values (and common encoded forms) from text,
-// structured outputs, diagnostics, and errors before leaving the Go boundary.
+// Redactor scrubs resolved secret values (and common encoded or multi-line
+// variants) from text, structured outputs, diagnostics, and errors before
+// leaving the Go boundary.
 type Redactor struct {
 	replacer *strings.Replacer
 }
@@ -37,35 +40,29 @@ func NewRedactor(secrets map[string]string) *Redactor {
 	sort.Strings(names)
 
 	seen := make(map[string]string)
-	needles := make([]redactNeedle, 0, len(names)*7)
+	needles := make([]redactNeedle, 0, len(names)*12)
 	for _, name := range names {
 		val := secrets[name]
-		if len(val) < minRedactSecretLength {
+		if val == "" || len(strings.TrimSpace(val)) < minRedactSecretLength {
 			continue
 		}
 		placeholder := "[REDACTED:" + name + "]"
-		variants := []string{
-			val,
-			base64.StdEncoding.EncodeToString([]byte(val)),
-			base64.RawStdEncoding.EncodeToString([]byte(val)),
-			base64.URLEncoding.EncodeToString([]byte(val)),
-			base64.RawURLEncoding.EncodeToString([]byte(val)),
-			url.QueryEscape(val),
-			url.PathEscape(val),
-		}
-		for _, variant := range variants {
-			if len(variant) < minRedactSecretLength {
-				continue
+		forms := collectSecretForms(val)
+		for _, form := range forms {
+			for _, variant := range expandSecretVariants(form) {
+				if len(variant) < minRedactSecretLength || strings.TrimSpace(variant) == "" {
+					continue
+				}
+				if _, exists := seen[variant]; exists {
+					continue
+				}
+				seen[variant] = placeholder
+				needles = append(needles, redactNeedle{
+					needle:      variant,
+					placeholder: placeholder,
+					secretName:  name,
+				})
 			}
-			if _, exists := seen[variant]; exists {
-				continue
-			}
-			seen[variant] = placeholder
-			needles = append(needles, redactNeedle{
-				needle:      variant,
-				placeholder: placeholder,
-				secretName:  name,
-			})
 		}
 	}
 
@@ -73,7 +70,7 @@ func NewRedactor(secrets map[string]string) *Redactor {
 		return &Redactor{}
 	}
 
-	// Sort longest needle first so encoded/longer forms match before substrings.
+	// Sort longest needle first so full multi-line and encoded forms match before substrings.
 	sort.Slice(needles, func(i, j int) bool {
 		if len(needles[i].needle) != len(needles[j].needle) {
 			return len(needles[i].needle) > len(needles[j].needle)
@@ -89,6 +86,61 @@ func NewRedactor(secrets map[string]string) *Redactor {
 		pairs = append(pairs, n.needle, n.placeholder)
 	}
 	return &Redactor{replacer: strings.NewReplacer(pairs...)}
+}
+
+func collectSecretForms(val string) []string {
+	seen := make(map[string]struct{})
+	forms := make([]string, 0, 8)
+	add := func(s string) {
+		if len(s) < minRedactSecretLength || strings.TrimSpace(s) == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		forms = append(forms, s)
+	}
+
+	add(val)
+	add(strings.TrimSpace(val))
+	norm := strings.ReplaceAll(val, "\r\n", "\n")
+	add(norm)
+	add(strings.TrimSpace(norm))
+
+	if strings.Contains(norm, "\n") {
+		for _, line := range strings.Split(norm, "\n") {
+			trimmed := strings.TrimSpace(line)
+			add(trimmed)
+		}
+	}
+	return forms
+}
+
+func expandSecretVariants(form string) []string {
+	variants := []string{
+		form,
+		base64.StdEncoding.EncodeToString([]byte(form)),
+		base64.RawStdEncoding.EncodeToString([]byte(form)),
+		base64.URLEncoding.EncodeToString([]byte(form)),
+		base64.RawURLEncoding.EncodeToString([]byte(form)),
+		url.QueryEscape(form),
+		url.PathEscape(form),
+	}
+	if jRaw, err := json.Marshal(form); err == nil && len(jRaw) >= 2 {
+		inner := string(jRaw[1 : len(jRaw)-1])
+		variants = append(variants, inner)
+	}
+	var noHTMLBuf bytes.Buffer
+	enc := json.NewEncoder(&noHTMLBuf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(form); err == nil {
+		trimmed := strings.TrimSuffix(noHTMLBuf.String(), "\n")
+		if len(trimmed) >= 2 {
+			variants = append(variants, trimmed[1:len(trimmed)-1])
+		}
+	}
+	return variants
 }
 
 // String replaces any secret occurrences in s with [REDACTED:<NAME>].

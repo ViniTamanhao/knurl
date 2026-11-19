@@ -162,22 +162,47 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 		timeoutMs = contract.MaxTimeoutMs
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+	const (
+		workerTimeoutGrace = 350 * time.Millisecond
+		workerTermWait     = 150 * time.Millisecond
+	)
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond+workerTimeoutGrace)
 	defer cancel()
 
 	//nolint:gosec // G204: spawns knurl self-binary via os.Executable with fixed _worker subcommand.
-	cmd := exec.CommandContext(runCtx, exePath, "_worker")
+	cmd := exec.Command(exePath, "_worker")
 	cmd.Dir = req.WorkDir
 	cmd.Env = host.SanitizedBaseEnv(s.lookupEnv())
 	cmd.Stdin = bytes.NewReader(reqBytes)
-	host.ConfigureProcessGroup(cmd)
+	host.IsolateProcessGroup(cmd)
 
 	stdoutBuf := host.NewLimitedBuffer(MaxIPCFrameBytes + 1)
 	stderrBuf := host.NewLimitedBuffer(MaxWorkerStderrBytes)
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
 
-	runErr := cmd.Run()
+	var runErr error
+	if startErr := cmd.Start(); startErr != nil {
+		runErr = startErr
+	} else {
+		waitCh := make(chan error, 1)
+		go func() {
+			waitCh <- cmd.Wait()
+		}()
+		select {
+		case runErr = <-waitCh:
+		case <-runCtx.Done():
+			_ = host.SignalProcessGroupTerm(cmd)
+			timer := time.NewTimer(workerTermWait)
+			select {
+			case runErr = <-waitCh:
+				timer.Stop()
+			case <-timer.C:
+				_ = host.SignalProcessGroupKill(cmd)
+				runErr = <-waitCh
+			}
+		}
+	}
 
 	if runCtx.Err() != nil {
 		return contract.WorkerResponse{
@@ -204,6 +229,13 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 	resp, decErr := decodeWorkerResponse(stdoutBuf.Bytes())
 	if decErr != nil {
 		stderrMsg := strings.TrimSpace(redactor.String(stderrBuf.String()))
+		stderrLower := strings.ToLower(stderrMsg)
+		code := contract.ErrWorkerCrashed
+		if strings.Contains(stderrLower, "out of memory") ||
+			strings.Contains(stderrLower, "cannot allocate memory") ||
+			strings.Contains(stderrLower, "memory limit") {
+			code = contract.ErrLimitExceeded
+		}
 		msg := fmt.Sprintf("worker exited unexpectedly (%v)", decErr)
 		if runErr != nil {
 			msg = fmt.Sprintf("worker exited unexpectedly (%v: %v)", runErr, decErr)
@@ -214,7 +246,7 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 		return contract.WorkerResponse{
 			OK: false,
 			Error: redactor.ToolError(&contract.ToolError{
-				Code:    contract.ErrWorkerCrashed,
+				Code:    code,
 				Message: msg,
 			}),
 			DurationMs: elapsedMs(),
