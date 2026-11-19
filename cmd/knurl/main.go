@@ -5,33 +5,48 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/ViniTamanhao/knurl/internal/runtime"
 )
 
-var version = "0.0.0-dev"
+var version = "0.1.0-dev"
 
 const helpText = `knurl — Tools your agents forge. Typed to run, safe to keep, zero shell required.
 
 Usage:
-  knurl [flags]
+  knurl <command> [flags]
+
+Commands:
+  run <tool-name-or-path>   Execute a tool bundle in an isolated worker subprocess
+  mcp                       Start the stdio MCP server (exposes knurl_run)
+  version                   Print knurl version information
+  help                      Show this help message
 
 Flags:
-  -h, --help      Show this help message
-  -v, --version   Print knurl version information
-
-Status:
-  Phase 0 (Foundation, Contracts & Spec Freeze). Runtime subcommands arrive in Phase 1+.
+  -h, --help                Show this help message
+  -v, --version             Print knurl version information
 `
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, os.Stdin, stdout, stderr)
+}
+
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return writeOut(stdout, helpText, stderr)
 	}
 
 	switch args[0] {
+	case "_worker":
+		return runtime.RunWorker(stdin, stdout)
+	case "run":
+		return runToolCmd(args[1:], stdout, stderr)
+	case "mcp":
+		return runMCPCmd(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		return writeOut(stdout, helpText, stderr)
 	case "-v", "--version", "version":
