@@ -162,22 +162,47 @@ func (s *Supervisor) RunWorkerRequest(ctx context.Context, req contract.WorkerRe
 		timeoutMs = contract.MaxTimeoutMs
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+	const (
+		workerTimeoutGrace = 350 * time.Millisecond
+		workerTermWait     = 150 * time.Millisecond
+	)
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond+workerTimeoutGrace)
 	defer cancel()
 
 	//nolint:gosec // G204: spawns knurl self-binary via os.Executable with fixed _worker subcommand.
-	cmd := exec.CommandContext(runCtx, exePath, "_worker")
+	cmd := exec.Command(exePath, "_worker")
 	cmd.Dir = req.WorkDir
 	cmd.Env = host.SanitizedBaseEnv(s.lookupEnv())
 	cmd.Stdin = bytes.NewReader(reqBytes)
-	host.ConfigureProcessGroup(cmd)
+	host.IsolateProcessGroup(cmd)
 
 	stdoutBuf := host.NewLimitedBuffer(MaxIPCFrameBytes + 1)
 	stderrBuf := host.NewLimitedBuffer(MaxWorkerStderrBytes)
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
 
-	runErr := cmd.Run()
+	var runErr error
+	if startErr := cmd.Start(); startErr != nil {
+		runErr = startErr
+	} else {
+		waitCh := make(chan error, 1)
+		go func() {
+			waitCh <- cmd.Wait()
+		}()
+		select {
+		case runErr = <-waitCh:
+		case <-runCtx.Done():
+			_ = host.SignalProcessGroupTerm(cmd)
+			timer := time.NewTimer(workerTermWait)
+			select {
+			case runErr = <-waitCh:
+				timer.Stop()
+			case <-timer.C:
+				_ = host.SignalProcessGroupKill(cmd)
+				runErr = <-waitCh
+			}
+		}
+	}
 
 	if runCtx.Err() != nil {
 		return contract.WorkerResponse{

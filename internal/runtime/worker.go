@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/signal"
 	"runtime/debug"
 	"time"
 
@@ -40,7 +41,10 @@ func RunWorker(stdin io.Reader, stdout io.Writer) int {
 		timeoutMs = contract.MaxTimeoutMs
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), workerTerminationSignals()...)
+	defer stopSignals()
+
+	ctx, cancel := context.WithTimeout(sigCtx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
 	resp := ExecuteInProcessWithConfig(ctx, req, ProcessConfig{

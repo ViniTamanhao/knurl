@@ -2,7 +2,10 @@
 
 package runtime
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
 
 const maxWorkerNoFile uint64 = 256
 
@@ -22,4 +25,8 @@ func applyWorkerRLimits() {
 			_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &nofile)
 		}
 	}
+}
+
+func workerTerminationSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
