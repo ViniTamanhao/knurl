@@ -12,7 +12,7 @@ Every architectural and UX choice in v0 is validated against three concrete work
 
 ## Phases
 
-### Phase 0 (Days 1–2): Foundation, Contracts & Spec Freeze *(Current)*
+### Phase 0 (Days 1–2): Foundation, Contracts & Spec Freeze *(Completed)*
 - **Deliverables:**
   - `mise.toml` toolchain (`go = "1.27.4"`, `golangci-lint = "2.15.0"`, `lefthook = "2.2.2"`), `.golangci.yml` v2 config, `lefthook.yml`, CI workflows, `CONTRIBUTING.md`, `AGENTS.md`.
   - Complete engineering docs (`README.md`, `docs/architecture.md`, `docs/roadmap.md`, `docs/specs/*`, 3 ADRs).
@@ -21,21 +21,19 @@ Every architectural and UX choice in v0 is validated against three concrete work
   - Contract-validated exit-gate bundles in `examples/repo-context/` and `examples/vps-health/`.
 - **Exit Gate:** `mise run check` passes with zero warnings/errors; example bundles validate strictly against JSON Schemas and semantic rules.
 
-### Phase 1 (Days 3–5): Weekend Kill-or-Commit Execution Slice
+### Phase 1 (Days 3–5): Weekend Kill-or-Commit Execution Slice *(Implemented)*
 - **Deliverables:**
-  - `knurl _worker` isolated subprocess with NDJSON stdin/stdout IPC, `context.WithTimeout`, and Unix process-group cleanup.
-  - Synchronous `dop251/goja` runtime host bindings.
-  - MVP host primitives: `os.Root`-confined `knurl.fs`, constrained `knurl.exec` templates, and env-backed host secret injection (`knurl.secrets.has`, `${secret:NAME}`).
-  - Minimal `knurl run <bundle-dir|name>` CLI and minimal stdio MCP server exposing `knurl_run`.
-- **Exit Gate (Kill-or-Commit):** End-to-end execution of `examples/repo-context` and `examples/vps-health` through both CLI and MCP stdio. Evaluate whether LLM-authored synchronous JS + Go host primitives deliver genuine ergonomics and reliability before investing in Phases 2–4.
+  - `knurl _worker` isolated subprocess with 2 MiB NDJSON stdin/stdout IPC, sanitized worker environment, `context.WithTimeout`, `goja` interrupt watchdog, and Unix `-pgid` process-group cleanup.
+  - Synchronous `dop251/goja` runtime host bindings (`internal/runtime`) with sandbox hygiene checks and structured canonical error propagation.
+  - Capability-enforced host primitives (`internal/host`): `os.Root`-confined `knurl.fs`, read-only `knurl.git`, constrained argv-only `knurl.exec` templates, host secret injection (`knurl.secrets.has`, `${secret:NAME}`), and raw/base64/URL-encoded secret redaction (`knurl.http` deferred to Phase 2).
+  - Runtime Draft 2020-12 input/output JSON Schema validation (`INVALID_INPUT` / `INVALID_OUTPUT`), minimal Phase 1 bundle loader (`internal/registry`), `knurl run <tool-name-or-path>` CLI, and minimal stdio MCP server (`knurl mcp`) exposing `knurl_run`.
+- **Exit Gate (Kill-or-Commit):** End-to-end execution of `examples/repo-context` and `examples/vps-health` through both CLI and MCP stdio. Dogfood for 2–3 days before committing to Phases 2–4.
 
-### Phase 2 (Days 6–9): Registry, Full Host Surface & Adversarial Hardening
+### Phase 2 (Days 6–9): Two-Tier Registry, `knurl.http` & Adversarial Hardening
 - **Deliverables:**
   - Two-tier filesystem registry (`./.knurl/tools` walking upward to `.git` + `~/.config/knurl/tools`), `active.json` atomic pointer resolution.
-  - Strict JSON Schema Draft 2020-12 enforcement on tool inputs and outputs (`INVALID_INPUT` / `INVALID_OUTPUT`).
-  - Full `knurl.git` (`branch`, `status`, `log`, `diff`) and `knurl.http` (`get`, `post`) host primitives with HTTPS enforcement, SSRF/private-IP blocking, and redirect secret-stripping.
-  - Complete secret redaction scrubber across stdout, stderr, errors, and diagnostics (raw, base64, URL-encoded).
-  - Adversarial sandbox security test suite (symlink traversal, flag/shell injection, secret exfiltration, runaway loops, child-process leaks).
+  - Outbound `knurl.http` (`get`, `post`) host primitive with HTTPS enforcement, SSRF/private-IP blocking, domain/path allowlisting, and redirect secret-stripping.
+  - Expanded adversarial sandbox security test suite (SSRF bypasses, symlink races, flag/shell injection, secret exfiltration, runaway loops, child-process leaks).
 - **Exit Gate:** All adversarial security tests pass under `go test -race ./...`; zero secret leakage across failure paths.
 
 ### Phase 3 (Days 10–14): Staging, Approval Gate, Rollback & Full MCP Surface
