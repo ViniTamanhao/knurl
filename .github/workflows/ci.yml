@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Toolchain Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain with mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+
+      - name: Run mise verification gate
+        run: mise run check
+
+  pr-title:
+    name: Conventional PR Title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -eu
+          len=${#PR_TITLE}
+          if [ "$len" -eq 0 ] || [ "$len" -gt 72 ]; then
+            echo "ERROR: PR title must be between 1 and 72 characters (got $len)." >&2
+            echo "  Title: $PR_TITLE" >&2
+            exit 1
+          fi
+          case "$PR_TITLE" in
+            *.)
+              echo "ERROR: PR title must not end with a trailing period." >&2
+              echo "  Title: $PR_TITLE" >&2
+              exit 1
+              ;;
+          esac
+          pattern='^(feat|fix|docs|chore|refactor|test|ci|build|perf)\((runtime|host|registry|approval|mcp|cli|schema|docs|ci|deps)\)!?: [a-z0-9]'
+          if ! printf '%s\n' "$PR_TITLE" | grep -Eq "$pattern"; then
+            echo "ERROR: PR title must follow Conventional Commits 1.0.0." >&2
+            echo "  Title:          $PR_TITLE" >&2
+            echo "  Expected:       <type>(<scope>): <imperative lowercase summary>" >&2
+            echo "  Allowed types:  feat, fix, docs, chore, refactor, test, ci, build, perf" >&2
+            echo "  Allowed scopes: runtime, host, registry, approval, mcp, cli, schema, docs, ci, deps" >&2
+            exit 1
+          fi
