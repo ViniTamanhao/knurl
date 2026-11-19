@@ -6,7 +6,7 @@ The name **knurl** comes from machining: cutting a textured grip into smooth met
 
 `knurl` is a single-binary, local-first, open-source Go tool vault. Agents author synchronous JavaScript tools (`tool.js`) paired with typed JSON Schemas (`manifest.json`) and mock-backed tests (`tests.json`), submit them to a staging gate, and—after explicit human inspection and approval—run them across sessions and clients via CLI or stdio MCP.
 
-> **Status:** **Phase 0 (Foundation, Contracts & Spec Freeze)** is in place—documentation, JSON Schemas, frozen Go contracts, and contract-verified example bundles. Runtime execution (`goja`, `_worker` isolation, host primitives, registry, approval, and MCP handlers) begins in Phase 1.
+> **Status:** **Phase 1 (Core Execution Slice / Kill-or-Commit Gate)** is implemented—`knurl _worker` subprocess isolation (`goja`), `os.Root` filesystem confinement, read-only `knurl.git`, templated `knurl.exec`, host secret binding & redaction, `knurl run`, and `knurl mcp` (`knurl_run`). Two-tier registry, `knurl.http`, and the `knurl_propose`/`knurl approve` workflow arrive in Phases 2–3.
 
 ## Core Principles
 
@@ -44,6 +44,52 @@ The name **knurl** comes from machining: cutting a textured grip into smooth met
 - **Synchronous `goja` Runtime:** Pure-Go ES6 JavaScript (`dop251/goja`) with no `async/await`, timers, Node APIs, or imports—keeping the host surface tiny and LLM code generation deterministic.
 - **Two-Tier Registry & Staging:** Repo-local `./.knurl/tools/` overrides global `~/.config/knurl/tools/`; unapproved changes live strictly in `~/.config/knurl/staging/`.
 - **5 Static MCP Meta-Tools:** `knurl_discover`, `knurl_inspect`, `knurl_run`, `knurl_propose`, and `knurl_status` over stdio (`github.com/modelcontextprotocol/go-sdk/mcp`).
+
+## Phase 1 Quickstart (Build, CLI & Stdio MCP)
+
+Build the single static `knurl` binary with `mise`:
+
+```sh
+mise run build
+```
+
+### Run a Tool from the CLI (`knurl run`)
+
+Execute `examples/repo-context` against the current repository:
+
+```sh
+./bin/knurl run repo-context --tools-dir ./examples
+./bin/knurl run repo-context --tools-dir ./examples --arg recent_commits=5 --json
+./bin/knurl run ./examples/repo-context --input '{"include_tree":false}'
+```
+
+Execute `examples/vps-health` (SSH diagnostics with host-injected `VPS_SSH_KEY_PATH`):
+
+```sh
+VPS_SSH_KEY_PATH=~/.ssh/id_ed25519 ./bin/knurl run vps-health --tools-dir ./examples \
+  --arg host=prod-01.example.com --arg user=ops --arg services=nginx,caddy
+```
+
+*(Note: `knurl.http` is deferred to Phase 2, so omit `--arg check_http_url=...` in Phase 1.)*
+
+### Connect an MCP Client (`knurl mcp`)
+
+In Phase 1, `knurl mcp` serves the **`knurl_run`** tool over stdin/stdout (writing diagnostics strictly to stderr). Add it to your MCP client configuration (Claude Desktop, Claude Code, Codex, etc.):
+
+```json
+{
+  "mcpServers": {
+    "knurl": {
+      "command": "/abs/path/to/knurl/bin/knurl",
+      "args": [
+        "mcp",
+        "--tools-dir", "/abs/path/to/knurl/examples",
+        "--workdir", "/abs/path/to/your-workspace"
+      ]
+    }
+  }
+}
+```
 
 ## Development Setup
 

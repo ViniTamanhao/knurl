@@ -42,11 +42,12 @@ flowchart LR
 
 ### IPC & Resource Control Invariants
 
-- **Framing:** Single-request / single-response NDJSON over dedicated stdin/stdout pipes (`WorkerRequest` -> `WorkerResponse`), capped at 2 MiB per IPC frame.
-- **Zero raw JS stdout:** Tool JavaScript has no `console` or `process.stdout` access. Only `knurl.log(msg)` emits diagnostic lines, captured inside `WorkerResponse.Diagnostics`.
-- **Clean MCP stdio:** In `knurl mcp`, MCP protocol traffic owns `os.Stdout`. The `_worker` runs with its own dedicated pipes; any parent diagnostics go strictly to `os.Stderr`.
-- **Deterministic cancellation:** Parent enforces `context.WithTimeout` (tool `timeout_ms`, default 30,000 ms, max 120,000 ms). On expiry, the parent interrupts the process group (`Setpgid: true`, `SIGKILL` to `-pgid` on Unix) so child processes spawned by `knurl.exec` cannot leak or orphan.
-- **Secret isolation:** Only secret values actually referenced by the tool's declared `secrets` are passed into the worker request in memory over stdin pipe (never written to disk or process environment variables of the worker), and the parent scrubs all resolved secret values (plus base64/URL-encoded variants) from outputs, errors, and diagnostics before returning.
+- **Framing & Caps:** Single-request / single-response NDJSON over dedicated stdin/stdout pipes (`WorkerRequest` -> `WorkerResponse`), capped at **2 MiB** (`MaxIPCFrameBytes`) per JSON frame and **64 KiB** (`MaxWorkerStderrBytes`) on captured worker stderr. Oversized requests or responses fail closed with `LIMIT_EXCEEDED`.
+- **Sanitized Worker Environment:** `knurl _worker` is spawned via `os.Executable()` with only a minimal allowlisted environment (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM`, `TZ`)—arbitrary parent environment variables and secrets are never inherited into the worker process environment.
+- **Zero raw JS stdout:** Tool JavaScript has no `console` or `process.stdout` access. Only `knurl.log(msg)` emits diagnostic lines (capped at 256 lines / 64 KiB), captured inside `WorkerResponse.Diagnostics`.
+- **Clean MCP stdio:** In `knurl mcp`, MCP protocol traffic owns `os.Stdout`. The `_worker` runs with its own dedicated pipes; any parent diagnostics (`slog`) go strictly to `os.Stderr`.
+- **Deterministic cancellation & teardown:** Parent enforces `context.WithTimeout` (tool `timeout_ms`, default 30,000 ms, max 120,000 ms). Inside `_worker`, a watchdog calls `vm.Interrupt` on context cancellation; at the OS level on Unix, `Setpgid: true` isolates the worker and its `knurl.exec` children into a dedicated process group so timeout cancellation sends `SIGKILL` to `-pgid` (with a `250 ms` `WaitDelay`) and guarantees zero orphaned child processes.
+- **Dual-layer secret isolation & redaction:** Only secret values declared in `manifest.secrets` are resolved on the parent and transmitted in memory inside the stdin `WorkerRequest` frame (never written to disk, CLI args, or worker env). Both `_worker` and the parent boundary scrub resolved secret values (raw, base64, URL-encoded variants, min length 4) across `Output`, `Error`, `Diagnostics`, and `knurl.exec` streams before returning.
 
 ## 3. Two-Tier Registry & Resolution Order
 
