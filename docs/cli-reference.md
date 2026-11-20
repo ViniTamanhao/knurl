@@ -180,3 +180,7 @@ Rejection never updates the registry; its exact reason is returned by MCP status
 These commands do not use `KNURL_TOOLS_DIR`; approval destinations are restricted
 to the repo/global registries. All commands use the global registry's config-root
 precedence for staging, including `KNURL_CONFIG_DIR/staging`.
+
+Lifecycle value flags also accept `--flag=value` (including `--reason=` for an
+empty reason). Each lifecycle command supports `-h` / `--help` while parsing its
+arguments and prints command-specific flags. Boolean flags do not accept values.

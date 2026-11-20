@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ViniTamanhao/knurl/internal/approval"
 	"github.com/ViniTamanhao/knurl/internal/contract"
@@ -324,5 +325,85 @@ func TestMCPStdioLifecycleKeepsProtocolClean(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected MCP diagnostics: %s", stderr.String())
+	}
+}
+
+func TestLifecycleEqualsFlagsAndHelp(t *testing.T) {
+	for _, args := range [][]string{{"sample", "--scope=repo", "--to=v2"}, {"sample", "--scope", "repo", "--to", "v2"}} {
+		o, err := parseLifecycle("rollback", args)
+		if err != nil || o.scope != contract.ScopeRepo || o.to != 2 {
+			t.Fatalf("%v: %+v %v", args, o, err)
+		}
+	}
+	o, err := parseLifecycle("reject", []string{"--last", "--reason=needs = review"})
+	if err != nil || o.reason != "needs = review" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	o, err = parseLifecycle("proposals", []string{"--status=all"})
+	if err != nil || o.status != "all" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, cmd := range []string{"approve", "reject", "rollback", "proposals"} {
+		var out, stderr bytes.Buffer
+		if exit := runLifecycleCmd(cmd, []string{"--help", "unused"}, strings.NewReader(""), &out, &stderr); exit != 0 || !strings.Contains(out.String(), "--help") {
+			t.Fatalf("%s: %d %s", cmd, exit, out.String())
+		}
+	}
+	if _, err = parseLifecycle("approve", []string{"--last=false"}); err == nil {
+		t.Fatal("accepted boolean value")
+	}
+}
+
+func TestReviewPreservesUTF8AndGlobalTarget(t *testing.T) {
+	var out bytes.Buffer
+	manifest, _ := json.Marshal(contract.Manifest{})
+	source := strings.Repeat("a", 11999) + "日本語"
+	err := renderReview(&out, contract.ProposalRecord{Scope: contract.ScopeGlobal}, map[string][]byte{"manifest.json": manifest, "tool.js": []byte(source)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(out.Bytes()) || strings.Contains(out.String(), "�") {
+		t.Fatal("review split UTF-8")
+	}
+	if !strings.Contains(out.String(), "Target: global\n") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestRegistryWorkDirSuppliesPreviewContext(t *testing.T) {
+	req := flagshipRequest(t)
+	work := lifecycleWorkspace(t)
+	if err := os.WriteFile(filepath.Join(work, ".pr-ready.json"), []byte(`{"schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	server := mcpserver.NewServer(mcpserver.Config{Registry: &registry.Registry{WorkDir: work}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a, b := mcp.NewInMemoryTransports()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx, a) }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "workdir-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = session.Close()
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	}()
+	req.Manifest.ReadOnly = true
+	req.Manifest.Capabilities.Exec = nil
+	req.Manifest.OutputSchema = map[string]any{"type": "object"}
+	req.Source = `function main(){return JSON.parse(knurl.fs.read(".pr-ready.json"));}`
+	req.Tests.Cases = req.Tests.Cases[:1]
+	req.Tests.Cases[0].Mocks.Exec = nil
+	req.Tests.Cases[0].Expect = contract.TestExpectation{OK: true, Output: map[string]any{"schema_version": 1}}
+	p := callLifecycle[contract.ProposeResponse](t, session, "knurl_propose", req, false)
+	if !p.DryRun.Executed || !p.DryRun.OK || p.DryRun.OutputPreview["schema_version"] != float64(1) {
+		t.Fatalf("preview %+v", p.DryRun)
 	}
 }

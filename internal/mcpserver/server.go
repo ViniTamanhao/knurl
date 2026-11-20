@@ -103,7 +103,7 @@ func NewServer(cfg Config) *mcp.Server {
 			ctx,
 			bundle.Manifest,
 			bundle.Source,
-			cfg.WorkDir,
+			reg.WorkDir,
 			req.Input,
 			req.TimeoutMs,
 			bundle.Scope,
@@ -111,7 +111,7 @@ func NewServer(cfg Config) *mcp.Server {
 		return &mcp.CallToolResult{IsError: !res.OK}, res, nil
 	})
 
-	addLifecycleTools(server, reg, supervisor, cfg.WorkDir)
+	addLifecycleTools(server, reg, supervisor, reg.WorkDir)
 	return server
 }
 

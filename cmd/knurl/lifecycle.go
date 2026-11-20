@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ViniTamanhao/knurl/internal/approval"
 	"github.com/ViniTamanhao/knurl/internal/contract"
@@ -20,12 +21,25 @@ type lifecycleOptions struct {
 	last, yes, json        bool
 	scope                  contract.Scope
 	to                     int
+	help                   bool
 }
 
 func parseLifecycle(command string, args []string) (lifecycleOptions, error) {
 	o := lifecycleOptions{status: "pending", scope: contract.ScopeAuto}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--help" || a == "-h" {
+			o.help = true
+			return o, nil
+		}
+		flag, value, inline := strings.Cut(a, "=")
+		inline = inline && strings.HasPrefix(a, "--")
+		if inline && flag != "--reason" && flag != "--status" && flag != "--scope" && flag != "--to" {
+			return o, fmt.Errorf("unknown flag %q", a)
+		}
+		if inline {
+			a = flag
+		}
 		switch {
 		case a == "--last" && (command == "approve" || command == "reject"):
 			o.last = true
@@ -34,11 +48,16 @@ func parseLifecycle(command string, args []string) (lifecycleOptions, error) {
 		case a == "--json" && command == "proposals":
 			o.json = true
 		case (a == "--reason" && command == "reject") || (a == "--status" && command == "proposals") || (a == "--scope" && command == "rollback") || (a == "--to" && command == "rollback"):
-			v, next, err := nextFlagValue(args, i, a)
-			if err != nil {
-				return o, err
+			v := value
+			if !inline {
+				var next int
+				var err error
+				v, next, err = nextFlagValue(args, i, a)
+				if err != nil {
+					return o, err
+				}
+				i = next
 			}
-			i = next
 			switch a {
 			case "--reason":
 				o.reason = v
@@ -78,13 +97,13 @@ func parseLifecycle(command string, args []string) (lifecycleOptions, error) {
 }
 
 func runLifecycleCmd(command string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
-		return writeOut(stdout, "Usage: knurl "+command+" (see knurl help)\n", stderr)
-	}
 	opts, err := parseLifecycle(command, args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "knurl %s: %v\n", command, err)
 		return 2
+	}
+	if opts.help {
+		return writeOut(stdout, lifecycleHelp(command), stderr)
 	}
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -181,7 +200,11 @@ func renderReview(w io.Writer, p contract.ProposalRecord, files map[string][]byt
 	if p.BaseVersion > 0 {
 		action = fmt.Sprintf("repair v%d -> v%d", p.BaseVersion, p.TargetVersion)
 	}
-	fmt.Fprintf(&b, "Proposal %s\nTool: %s | %s\nTarget: %s %s\nSummary: %s\n", p.ProposalID, p.ToolName, action, p.Scope, p.TargetRepoRoot, strconv.Quote(p.Summary))
+	target := string(p.Scope)
+	if p.TargetRepoRoot != "" {
+		target += " " + p.TargetRepoRoot
+	}
+	fmt.Fprintf(&b, "Proposal %s\nTool: %s | %s\nTarget: %s\nSummary: %s\n", p.ProposalID, p.ToolName, action, target, strconv.Quote(p.Summary))
 	if p.Elevated {
 		b.WriteString("*** ELEVATED PERMISSIONS ***\n")
 	}
@@ -209,7 +232,11 @@ func renderReview(w io.Writer, p contract.ProposalRecord, files map[string][]byt
 	} else {
 		source := string(files["tool.js"])
 		if len(source) > 12000 {
-			source = source[:12000] + "\n[review truncated; inspect staged tool.js before approving]"
+			end := 12000
+			for !utf8.RuneStart(source[end]) {
+				end--
+			}
+			source = source[:end] + "\n[review truncated; inspect staged tool.js before approving]"
 		}
 		fmt.Fprintf(&b, "Source:\n%s\n", source)
 	}
@@ -222,4 +249,9 @@ func renderReview(w io.Writer, p contract.ProposalRecord, files map[string][]byt
 	}, b.String())
 	_, err := io.WriteString(w, text)
 	return err
+}
+
+func lifecycleHelp(command string) string {
+	usage := map[string]string{"approve": "[<proposal-id> | --last] [--yes | -y]\n  --last       Select newest pending proposal\n  --yes, -y    Approve without prompting", "reject": "[<proposal-id> | --last] [--reason <text>]\n  --last       Select newest pending proposal\n  --reason     Record the human rejection reason", "rollback": "<tool> [--to v<N>] [--scope repo|global]\n  --to         Restore an installed approved version\n  --scope      Select a registry tier", "proposals": "[--status pending|all] [--json]\n  --status     Filter proposals (default pending)\n  --json       Print compact JSON rows"}
+	return "Usage: knurl " + command + " " + usage[command] + "\n  -h, --help   Show command help\n"
 }
