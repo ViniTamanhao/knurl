@@ -7,8 +7,8 @@
 ```text
 cmd/knurl                   CLI entrypoint, flags, subcommands, hidden `_worker` entrypoint
 internal/contract           Frozen JSON-serializable schemas, error codes, and MCP payloads
-internal/registry           Two-tier repo/global resolution, version lookup, active.json reads
-internal/approval           Staging store, validation pipeline, capability diff, atomic promote/rollback
+internal/registry           Two-tier lookup, atomic promotion/rollback, discover/inspect
+internal/approval           Staging, validation, capability/source diff, human decision records
 internal/host               Capability-enforced fs (os.Root), git, http, exec templates, secrets/redaction
 internal/runtime            Parent supervisor + `_worker` subprocess IPC + synchronous goja VM
 internal/mcpserver          5 static MCP meta-tools wired to github.com/modelcontextprotocol/go-sdk/mcp

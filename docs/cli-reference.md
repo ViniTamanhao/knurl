@@ -156,3 +156,27 @@ All structured errors returned by CLI (`--json`), MCP, and `_worker` IPC use one
 | `HTTP_ERROR` | Outbound HTTP request failed or was blocked by SSRF/redirect rules |
 | `WORKER_CRASHED` | `_worker` subprocess exited unexpectedly or returned malformed IPC |
 | `INTERNAL_ERROR` | Unexpected host error |
+
+## 8. Human lifecycle commands
+
+```sh
+knurl approve [<proposal-id> | --last] [--yes | -y]
+knurl reject [<proposal-id> | --last] [--reason "text"]
+knurl rollback <tool> [--to v<N>] [--scope repo|global]
+knurl proposals [--status pending|all] [--json]
+```
+
+Approval prints target, requested permission changes, elevated/escalation markers,
+secret names, fixture counts, safe preview or skip reason, and source/diff. It
+requires `y` or `yes` at `[y/N]`; EOF or an empty answer cancels and leaves the
+proposal pending (exit 0). `--yes` is exclusively a local CLI flag. Promotion
+verifies the staged digest and rejects stale bases. Repo targets are captured at
+proposal time. Rollback defaults to auto resolution and restores `previous_version`
+(or the explicit approved version), keeping all installed files.
+
+`--last` is valid only for approve/reject. Listing defaults to pending and returns
+compact rows: `proposal_id`, `tool`, `kind`, `scope`, `status`, `created_at`.
+Rejection never updates the registry; its exact reason is returned by MCP status.
+These commands do not use `KNURL_TOOLS_DIR`; approval destinations are restricted
+to the repo/global registries. All commands use the global registry's config-root
+precedence for staging, including `KNURL_CONFIG_DIR/staging`.

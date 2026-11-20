@@ -74,10 +74,31 @@ Read-only `knurl.git` invocations additionally enforce:
 
 During `knurl_propose`, `knurl` automatically performs a working-directory dry-run preview **only when all of the following hold**:
 1. `manifest.read_only == true`
-2. Every `exec.templates[*].read_only == true`
-3. Every `http.allow[*].methods` contains only `GET`
+2. `manifest.IsElevated() == false`: no exec templates, outbound HTTP rules,
+   or declared secrets (even optional secrets make a tool elevated).
+3. A fixture sample, schema-default object, or `{}` passes `input_schema`.
 
-Otherwise, `dry_run.executed` is `false` with an explanatory `skipped_reason` (`"non-read-only tool or capability"`).
+Otherwise, `dry_run.executed` is `false` with an explicit `skipped_reason`.
+Elevated tools use `"elevated tool: exec, external HTTP, secrets, or non-read-only declaration"`;
+missing safe input uses `"no schema-valid sample or default input"`. Secrets are
+never resolved for elevated previews, including when a required secret is unset.
+
+Fixture execution always uses `_worker` with an isolated temporary filesystem,
+synthetic named secrets, and explicit Git/HTTP/exec mocks. Missing mocks fail
+closed; they never fall through to real commands or networking. Mock responses
+still pass through capability, argument, byte-cap, redaction and output-schema
+checks. The temporary filesystem is removed after execution. No real secret is
+used in a fixture. Source top-level code also executes only in the worker.
+
+Capability diffs sort capability names and serialized permission details, reporting
+`added`, `removed`, and `unchanged` entries. HTTP rule details include methods,
+paths, plaintext permission and bound secret names; exec details include complete
+argv templates, argument constraints and environment bindings. Changed rules
+appear as removal plus addition. Every addition is conservatively flagged as
+an escalation; transition into elevated access is also flagged. Human review
+includes a unified source diff. Approval rechecks the exact staged SHA-256 digest
+and the active base under a registry write lock before promotion. Neither approval
+nor rollback is registered as an MCP handler.
 
 ## 8. `_worker` Resource Safeguards & Adversarial Test Suite
 
@@ -97,3 +118,7 @@ Automated adversarial verification lives in `internal/host/security_test.go` and
 8. Secret exfiltration via `exec`, HTTP response body/headers, JS exceptions, nested JSON output, `knurl.log`, and multi-line secrets
 9. Pre-spawn `INVALID_INPUT` schema rejection (verified without spawning `_worker`) and post-redaction `INVALID_OUTPUT` rejection
 10. Two-tier registry precedence (`repo` shadowing `global`) and path-traversal tool name rejection (`../../etc/passwd`)
+
+Staging also compiles both embedded I/O schemas before fixture execution, rejecting
+malformed schema keywords as `INVALID_MANIFEST`. The schema compiler has no external
+URL loader, so schema references cannot open files or initiate network requests.

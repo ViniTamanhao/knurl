@@ -47,7 +47,7 @@ Lightweight search across approved tools. Never returns `tool.js` source code or
 
 ### 1.2 `knurl_inspect`
 
-Returns the complete `manifest.json` and metadata for one approved tool. Never exposes `tool.js` source unless explicitly inspected by a human via CLI (`knurl inspect --source`).
+Returns the complete `manifest.json` and metadata for one approved tool. Never exposes `tool.js` source. Humans review source during approval or read the staged file.
 
 **Input:**
 ```json
@@ -143,8 +143,9 @@ Submits a new tool (`v1`) or repair (`v<N+1>`) into `~/.config/knurl/staging/<pr
     "scope": { "type": "string", "enum": ["repo", "global"] },
     "summary": { "type": "string", "minLength": 5, "maxLength": 200 },
     "manifest": { "type": "object" },
-    "source": { "type": "string", "minLength": 1 },
-    "tests": { "type": "object" }
+    "source": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+    "tests": { "type": "object" },
+    "base_version": { "type": "integer", "minimum": 0 }
   },
   "additionalProperties": false
 }
@@ -153,7 +154,7 @@ Submits a new tool (`v1`) or repair (`v<N+1>`) into `~/.config/knurl/staging/<pr
 **Output:**
 ```json
 {
-  "proposal_id": "prop_01JQ7X9K2M...",
+  "proposal_id": "prop_0123456789abcdef0123456789abcdef",
   "status": "pending",
   "tool": "pr-ready",
   "target_version": 2,
@@ -180,13 +181,11 @@ Submits a new tool (`v1`) or repair (`v<N+1>`) into `~/.config/knurl/staging/<pr
     ]
   },
   "dry_run": {
-    "executed": true,
-    "skipped_reason": "",
-    "duration_ms": 38,
-    "ok": true,
-    "output_preview": { "..." : "..." }
+    "executed": false,
+    "skipped_reason": "elevated tool: exec, external HTTP, secrets, or non-read-only declaration",
+    "ok": false
   },
-  "approval_command": "knurl approve prop_01JQ7X9K2M..."
+  "approval_command": "knurl approve prop_0123456789abcdef0123456789abcdef"
 }
 ```
 
@@ -213,7 +212,7 @@ Checks the current state of a submitted proposal.
 **Output:**
 ```json
 {
-  "proposal_id": "prop_01JQ7X9K2M...",
+  "proposal_id": "prop_0123456789abcdef0123456789abcdef",
   "status": "approved",
   "tool": "pr-ready",
   "target_version": 2,
@@ -222,7 +221,7 @@ Checks the current state of a submitted proposal.
   "created_at": "2026-11-19T12:00:00Z",
   "decided_at": "2026-11-19T12:01:15Z",
   "decision_note": "approved via CLI",
-  "approval_command": ""
+  "promoted_version": 2
 }
 ```
 
@@ -255,3 +254,41 @@ All `knurl` runtime, validation, and MCP execution envelopes use the following c
 | `HTTP_ERROR` | Network failure, TLS error, blocked SSRF target, or disallowed redirect |
 | `WORKER_CRASHED` | Isolated `_worker` subprocess exited unexpectedly without a valid frame |
 | `INTERNAL_ERROR` | Unexpected host failure |
+
+## 3. Implemented Phase 3 details
+
+`knurl_propose` accepts optional `base_version` (integer >= 0). Omission means
+`manifest.version - 1`; explicit bases support repairs after a rollback.
+Submission and human promotion both reject stale bases with `INVALID_MANIFEST`.
+`source` is capped at 1 MiB, as are individual bundle/staging files. A synchronous
+top-level `function main(input)` declaration is required; compilation never
+executes untrusted JS in the control plane.
+
+The successful proposal response additionally includes `source_diff` for changed
+repair source. `validation.tests` records each case's name, pass flag and optional
+redacted structured error or mismatched output. `knurl_status` additionally returns `promoted_version`
+after approval. Invalid proposals are not persisted. Fixture failures return
+`TEST_FAILED` with `error.details.validation`, including individual outcomes.
+Lifecycle handler errors return MCP `isError: true` and structured content
+`{"error":{"code":"...","message":"...","details":{}}}` (details optional).
+Run errors retain the `ExecutionResult` envelope. SDK schema violations use the
+SDK's invalid-argument handling before a handler is called.
+
+Discovery applies AND matching to requested tags, a case-insensitive substring
+query across name/description/tags, a default limit of 25 (maximum 100), and repo
+precedence on collisions for `scope: "all"`. Returned metadata never includes
+source or full schemas. Inspect and run resolve `auto` by default. All five tools
+are static across approvals and independent client sessions.
+
+| Tool | ReadOnlyHint | DestructiveHint | IdempotentHint | OpenWorldHint |
+| :--- | :--- | :--- | :--- | :--- |
+| `knurl_discover` | true | false | true | false |
+| `knurl_inspect` | true | false | true | false |
+| `knurl_run` | false | true | false | true |
+| `knurl_propose` | false | false | false | false |
+| `knurl_status` | true | false | true | false |
+
+Run annotations conservatively cover any approved tool. Propose only adds staging
+files and may preview local read-only operations; all elevated tools, including
+GET-only HTTP and secrets, skip live preview. Thus the elevated example in section
+1.4 has `dry_run.executed: false`, `ok: false`, and an explicit skip reason.
