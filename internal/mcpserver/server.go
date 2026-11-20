@@ -23,8 +23,7 @@ type Config struct {
 	Logger     *slog.Logger
 }
 
-// NewServer constructs a stateless MCP server exposing knurl_run wired to the
-// two-tier registry.
+// NewServer constructs the five static meta-tools over the two-tier registry.
 func NewServer(cfg Config) *mcp.Server {
 	logger := cfg.Logger
 	if logger == nil {
@@ -66,6 +65,7 @@ func NewServer(cfg Config) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "knurl_run",
+		Annotations:  annotations(false, true, false, true),
 		Description:  "Validate typed JSON input against a tool manifest, execute tool.js in an isolated _worker subprocess, redact secrets, and validate structured JSON output.",
 		InputSchema:  runToolInputSchema(),
 		OutputSchema: runToolOutputSchema(),
@@ -103,7 +103,7 @@ func NewServer(cfg Config) *mcp.Server {
 			ctx,
 			bundle.Manifest,
 			bundle.Source,
-			cfg.WorkDir,
+			reg.WorkDir,
 			req.Input,
 			req.TimeoutMs,
 			bundle.Scope,
@@ -111,6 +111,7 @@ func NewServer(cfg Config) *mcp.Server {
 		return &mcp.CallToolResult{IsError: !res.OK}, res, nil
 	})
 
+	addLifecycleTools(server, reg, supervisor, reg.WorkDir)
 	return server
 }
 

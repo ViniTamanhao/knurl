@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -162,4 +163,24 @@ func TestValidateOutput(t *testing.T) {
 
 	validOut["extra"] = "disallowed"
 	assertToolErrorCode(t, contract.ValidateOutput(repoManifest, validOut), contract.ErrInvalidOutput)
+}
+
+func TestManifestRejectsMalformedIOSchemas(t *testing.T) {
+	for _, kind := range []string{"input_schema", "output_schema"} {
+		t.Run(kind, func(t *testing.T) {
+			m := loadExampleManifest(t, "repo-context")
+			bad := map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "invented-type"}}}
+			if kind == "input_schema" {
+				m.InputSchema = bad
+			} else {
+				m.OutputSchema = bad
+			}
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = contract.ValidateManifestJSON(raw)
+			assertToolErrorCode(t, err, contract.ErrInvalidManifest)
+		})
+	}
 }

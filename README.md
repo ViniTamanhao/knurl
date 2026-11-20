@@ -124,6 +124,40 @@ Start `knurl mcp` from any MCP-capable client (such as Claude Desktop, Cursor, o
 
 To test directly against the repository's example bundles, add `"--tools-dir", "/abs/path/to/knurl/examples"` to `args`.
 
+### Propose, Approve, Repair and Roll Back
+
+In an MCP session, ask the agent to call `knurl_propose` with `name`, `scope`,
+`summary`, `manifest`, `source`, and `tests`. The bundle is validated in isolated
+workers and staged outside the active registry. Then review it in a terminal:
+
+```sh
+knurl proposals
+knurl approve --last          # Review permissions, fixture results and source; confirm y
+knurl run pr-ready --input '{"allow_dirty":true}'
+```
+
+For the bundled `pr-ready` workflow, the target repo needs `.pr-ready.json`
+containing `{"schema_version":1}`. Set `run_checks: true` to execute its approved
+`mise run check` template; it is elevated and never runs live during staging.
+
+A new agent can call `knurl_discover` with `{"query":"pr-ready"}`, read the
+contract with `knurl_inspect`, and execute it through `knurl_run`. If execution
+fails, it proposes a repair with the next manifest version and the inspected
+`base_version`. The old version stays active until the human approves the diff:
+
+```sh
+knurl approve --last          # Review v1 -> v2 capability and code diffs
+knurl run pr-ready --json
+knurl rollback pr-ready       # Return to v1; v2 stays installed
+knurl rollback pr-ready --to v2 --scope repo
+knurl reject --last --reason "please narrow permissions"
+knurl proposals --status all --json
+```
+
+The proposing agent tracks approval or rejection using `knurl_status`. MCP never
+exposes approval or rollback. `knurl approve --last --yes` supports explicit
+non-interactive approval from a local terminal.
+
 ### Anatomy of a Tool Bundle
 
 Each versioned tool is a small, human-auditable directory on disk:

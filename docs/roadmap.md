@@ -11,7 +11,7 @@ This document is the single source of truth for `knurl`'s phased v0 delivery pla
 | **Phase 0** | Foundation, Contracts & Spec Freeze | Completed | `mise run check` passes; schemas and example bundles validate |
 | **Phase 1** | Core Execution Slice (Kill-or-Commit) | Completed | End-to-end CLI & MCP execution of `repo-context` and `vps-health` |
 | **Phase 2** | Two-Tier Registry, `knurl.http` & Hardening | Completed | 10-category adversarial security suite passes under `-race`; zero secret leaks |
-| **Phase 3** | Staging, Approval Gate, Rollback & Full MCP | Planned | End-to-end propose -> approve -> run -> repair -> diff-approve -> rollback on `pr-ready` |
+| **Phase 3** | Staging, Approval Gate, Rollback & Full MCP | Implemented | End-to-end propose -> approve -> run -> repair -> diff-approve -> rollback on `pr-ready` |
 | **Phase 4** | Polish, Benchmarks & Distribution | Planned | Reproducible `v0.1.0` static release builds and benchmark report |
 
 ---
@@ -58,7 +58,7 @@ Every architectural, security, and UX decision in v0 is validated against three 
   - Automated 10-category adversarial security & sandbox test suite (`internal/host/security_test.go`, `internal/runtime/adversarial_test.go`) plus live TLS `httptest.Server` integration for `examples/vps-health`.
 - **Exit Gate:** All adversarial security tests pass under `go test -race ./...`; zero secret leakage across failure paths.
 
-### Phase 3: Staging, Approval Gate, Rollback & Full MCP Surface *(Planned)*
+### Phase 3: Staging, Approval Gate, Rollback & Full MCP Surface *(Implemented)*
 
 - **Deliverables:**
   - Staging store (`~/.config/knurl/staging/<proposal-id>/`) with `proposal.json` lifecycle (`pending`, `approved`, `rejected`, `superseded`) and SHA-256 bundle integrity verification.

@@ -95,6 +95,18 @@ func ValidateManifestJSON(data []byte) (Manifest, error) {
 			Message: fmt.Sprintf("manifest.json failed semantic validation: %v", semErr),
 		}
 	}
+	for _, entry := range []struct {
+		name   string
+		schema map[string]any
+	}{{"input", manifest.InputSchema}, {"output", manifest.OutputSchema}} {
+		raw, marshalErr := json.Marshal(entry.schema)
+		if marshalErr != nil {
+			return Manifest{}, &ToolError{Code: ErrInvalidManifest, Message: marshalErr.Error()}
+		}
+		if _, compileErr := compileSchemaBytes("knurl://"+entry.name+"/"+manifest.Name, raw); compileErr != nil {
+			return Manifest{}, &ToolError{Code: ErrInvalidManifest, Message: fmt.Sprintf("invalid %s_schema: %v", entry.name, compileErr)}
+		}
+	}
 	return manifest, nil
 }
 
@@ -172,4 +184,27 @@ func validateMapWithSchema(
 		}
 	}
 	return nil
+}
+
+// ValidateTestsJSON validates the frozen fixture schema and manifest references.
+func ValidateTestsJSON(data []byte, m Manifest) (TestSuite, error) {
+	sch, err := compileSchemaBytes("https://knurl.dev/schemas/tests.schema.json", schemas.TestsJSON)
+	if err != nil {
+		return TestSuite{}, &ToolError{Code: ErrInternalError, Message: err.Error()}
+	}
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err == nil {
+		err = sch.Validate(value)
+	}
+	if err != nil {
+		return TestSuite{}, &ToolError{Code: ErrInvalidTests, Message: err.Error()}
+	}
+	var suite TestSuite
+	if err = json.Unmarshal(data, &suite); err == nil {
+		err = ValidateTestSuiteSemantic(m, suite)
+	}
+	if err != nil {
+		return suite, &ToolError{Code: ErrInvalidTests, Message: err.Error()}
+	}
+	return suite, nil
 }

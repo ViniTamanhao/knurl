@@ -57,7 +57,7 @@ Flat unversioned bundle directories (containing `manifest.json` and `tool.js` di
 
 ```json
 {
-  "proposal_id": "prop_01JQ7X9K2M...",
+  "proposal_id": "prop_0123456789abcdef0123456789abcdef",
   "approved_at": "2026-11-19T12:00:00Z",
   "bundle_sha256": "e3b0c44298fc1c149afbf4c8996fb924...",
   "summary": "Add branch base flag fallback",
@@ -88,7 +88,8 @@ Lookup behavior for `scope`:
 - `repo`: search repo-local only.
 - `global`: search global only.
 - `override`: search configured override directory only.
-- `all` (for `discover` / `List`): list tools from both tiers with explicit `scope` labels (`repo` and `global`).
+- `all` for MCP discovery: search both tiers with repo-local precedence on name
+  collisions. The lower-level `List(all)` inventory retains both scope labels.
 
 ## 4. Rollback Semantics
 
@@ -113,3 +114,60 @@ staging/
 `proposal.json` stores `proposal_id`, `tool_name`, `target_version`, `base_version`, `scope`, `summary`, `status` (`pending` | `approved` | `rejected` | `superseded`), `bundle_sha256`, `elevated`, `validation`, `capability_diff`, `dry_run` (if run), `created_at`, `decided_at`, and `decision_note`.
 
 When a proposal is approved, any older `pending` proposals for the same `(scope, tool_name)` may be marked `superseded` to keep `knurl approve --last` unambiguous.
+
+## Phase 3 implementation contract
+
+The pointer remains `active.json` (not a symlink or `current` file). Promotion
+writes and syncs a complete version before switching the pointer. Registry
+mutations serialize with an exclusive lock directory; stale locks fail closed.
+Repair requests may include `base_version`; when omitted it is inferred as
+`manifest.version - 1`. Both submission and approval reject stale bases.
+
+The proposal record additionally stores `kind` (`create` or `repair`),
+`target_repo_root` (absolute repo destination for repo proposals), `source_diff`
+(unified tool.js diff), and `promoted_version` after approval. `scope` is the
+canonical target scope field; `decided_at` is the approval/rejection timestamp.
+Validation includes per-case `tests` entries (`name`, `passed`, optional `error`).
+The digest hashes each filename, NUL, byte length, NUL, and exact file bytes in
+manifest.json, tool.js, tests.json order. Invalid submissions are not persisted.
+
+### Exact `proposal.json` fields
+
+Unknown optional metadata is not an executable capability. The canonical Go
+record is `contract.ProposalRecord`; JSON timestamps are UTC RFC 3339.
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `proposal_id` | string | `prop_` followed by 32 lowercase hex characters from 128 random bits |
+| `tool_name` | string | Validated bundle name |
+| `kind` | string | `create` when base is zero; otherwise `repair` |
+| `target_version`, `base_version` | integer | Next installed version and reviewed active base (zero for creation) |
+| `scope` | string | `repo` or `global` |
+| `target_repo_root` | optional string | Absolute destination captured at proposal time; approval works from another terminal directory |
+| `summary` | string | Agent's 5–200 character review summary |
+| `status` | string | `pending`, `approved`, `rejected`; `superseded` reserved by the frozen contract |
+| `bundle_sha256` | string | Lowercase 64-character hex digest of exact bundle bytes |
+| `elevated` | boolean | Derived from the manifest, including HTTP and secrets |
+| `validation` | object | `schema_valid`, `compiled`, `tests_passed`, `tests_total`, `failures` (string array), `tests` (per-case array) |
+| `validation.tests[]` | object | `name`, `passed`, optional structured `error` (`code`, `message`, optional `details`), and redacted `output` on an expectation mismatch |
+| `capability_diff` | object | `elevated_before`, `elevated_after`, `has_escalation`, `changes` |
+| `capability_diff.changes[]` | object | `kind` (`added`, `removed`, `unchanged`), `capability`, `detail` |
+| `source_diff` | optional string | Unified whole-file hunk for repairs; omitted when identical |
+| `dry_run` | optional object | `executed`, `ok`, optional `skipped_reason`, `duration_ms`, `output_preview`, `error` |
+| `created_at` | timestamp | Successful validation and staging time |
+| `decided_at` | optional timestamp | Human approval or rejection time |
+| `decision_note` | optional string | `approved via CLI` or exact human rejection reason |
+| `promoted_version` | optional integer | Installed version, populated after approval |
+
+`approve --last` selects the newest pending record, breaking timestamp ties by
+proposal ID. Rejected records remain auditable but are never eligible. Competing
+pending proposals remain pending; approval rechecks their base and rejects stale
+ones. Version allocation uses the highest installed version plus one, even after
+rollback; use explicit `base_version` when the active version differs from the
+highest installed version. `previous_version` permits repeated backward/forward
+rollback. Rollback validates the target bundle and requires its approval record.
+
+Proposal listing and `approve --last` skip unreadable or malformed staging records;
+those records remain on disk and direct ID inspection still reports the error.
+Atomic metadata and installation temporary names use 128 random bits plus exclusive
+creation, avoiding dependence on clock resolution.

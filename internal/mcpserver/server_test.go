@@ -133,8 +133,8 @@ func TestMCPServerKnurlRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(toolsRes.Tools) != 1 || toolsRes.Tools[0].Name != "knurl_run" {
-		t.Fatalf("ListTools = %+v, want single knurl_run tool", toolsRes.Tools)
+	if len(toolsRes.Tools) != 5 {
+		t.Fatalf("ListTools = %+v, want five static tools", toolsRes.Tools)
 	}
 
 	// 1. Happy path: repo-context over MCP

@@ -55,6 +55,15 @@ func (h *Host) ensureGitRepo(ctx context.Context) error {
 			Message: "capabilities.git.read is not granted",
 		}
 	}
+	if h.mocks != nil {
+		if h.mocks.Git == nil {
+			return mockMissing("git")
+		}
+		if h.mocks.Git.Error != "" {
+			return &contract.ToolError{Code: h.mocks.Git.Error, Message: "mock git error"}
+		}
+		return nil
+	}
 	out, code, err := h.runGitRaw(ctx, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
 		return err
@@ -201,6 +210,12 @@ func (h *Host) GitBranch(ctx context.Context) (contract.GitBranch, error) {
 	}
 
 	var res contract.GitBranch
+	if h.mocks != nil {
+		if h.mocks.Git.Branch == nil {
+			return res, mockMissing("git.branch")
+		}
+		return *h.mocks.Git.Branch, nil
+	}
 
 	branchOut, branchCode, err := h.runGitRaw(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
@@ -238,6 +253,12 @@ func (h *Host) GitBranch(ctx context.Context) (contract.GitBranch, error) {
 func (h *Host) GitStatus(ctx context.Context) (contract.GitStatus, error) {
 	if err := h.ensureGitRepo(ctx); err != nil {
 		return contract.GitStatus{}, err
+	}
+	if h.mocks != nil {
+		if h.mocks.Git.Status == nil {
+			return contract.GitStatus{}, mockMissing("git.status")
+		}
+		return *h.mocks.Git.Status, nil
 	}
 
 	out, code, err := h.runGitRaw(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
@@ -340,6 +361,17 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 		return nil, pathErr
 	}
 
+	if h.mocks != nil {
+		if h.mocks.Git.Log == nil {
+			return nil, mockMissing("git.log")
+		}
+		commits := append([]contract.GitCommit{}, h.mocks.Git.Log[:min(limit, len(h.mocks.Git.Log))]...)
+		for i := range commits {
+			commits[i].Author = h.redactor.String(commits[i].Author)
+			commits[i].Subject = h.redactor.String(commits[i].Subject)
+		}
+		return commits, nil
+	}
 	if opts.Ref == "" {
 		_, headCode, headErr := h.runGitRaw(ctx, "rev-parse", "--verify", "--quiet", "HEAD")
 		if headErr != nil {
@@ -428,6 +460,14 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 		return contract.GitDiff{}, pathErr
 	}
 
+	if h.mocks != nil {
+		if h.mocks.Git.Diff == nil {
+			return contract.GitDiff{}, mockMissing("git.diff")
+		}
+		diff := *h.mocks.Git.Diff
+		diff.Patch = h.redactor.String(diff.Patch)
+		return diff, nil
+	}
 	targetArgs := make([]string, 0, 4)
 	if opts.Staged {
 		targetArgs = append(targetArgs, "--staged")

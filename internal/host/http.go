@@ -112,6 +112,9 @@ func (h *Host) doHTTP(
 		return HTTPResponse{}, h.redactor.ToolError(asHostToolError(hdrErr))
 	}
 
+	if h.mocks != nil {
+		return h.mockHTTP(method, rawURL, expandedHeaders)
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 

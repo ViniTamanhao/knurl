@@ -40,6 +40,7 @@ func WithHTTPLookupIP(fn func(context.Context, string) ([]net.IPAddr, error)) Op
 
 // Host provides capability-checked OS primitives for one tool execution.
 type Host struct {
+	mocks           *contract.TestMocks
 	manifest        contract.Manifest
 	workDir         string
 	root            *os.Root
@@ -52,6 +53,11 @@ type Host struct {
 	httpLookupIP    func(context.Context, string) ([]net.IPAddr, error)
 	diagnostics     []string
 	diagBytes       int
+}
+
+// WithMocks selects fixture-only host operations; absent mocks never fall through.
+func WithMocks(mocks *contract.TestMocks) Option {
+	return func(h *Host) { h.mocks = mocks }
 }
 
 // New constructs a Host confined to workDir for the supplied manifest and secrets.

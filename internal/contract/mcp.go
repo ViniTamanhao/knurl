@@ -58,16 +58,18 @@ type RunResponse = ExecutionResult
 
 // ProposeRequest is the input payload for the knurl_propose MCP meta-tool.
 type ProposeRequest struct {
-	Name     string    `json:"name"`
-	Scope    Scope     `json:"scope"`
-	Summary  string    `json:"summary"`
-	Manifest Manifest  `json:"manifest"`
-	Source   string    `json:"source"`
-	Tests    TestSuite `json:"tests"`
+	BaseVersion *int      `json:"base_version,omitempty"`
+	Name        string    `json:"name"`
+	Scope       Scope     `json:"scope"`
+	Summary     string    `json:"summary"`
+	Manifest    Manifest  `json:"manifest"`
+	Source      string    `json:"source"`
+	Tests       TestSuite `json:"tests"`
 }
 
 // ProposeResponse is the output payload for the knurl_propose MCP meta-tool.
 type ProposeResponse struct {
+	SourceDiff      string           `json:"source_diff,omitempty"`
 	ProposalID      string           `json:"proposal_id"`
 	Status          ProposalStatus   `json:"status"`
 	Tool            string           `json:"tool"`
@@ -88,6 +90,7 @@ type StatusRequest struct {
 
 // StatusResponse is the output payload for the knurl_status MCP meta-tool.
 type StatusResponse struct {
+	PromotedVersion int            `json:"promoted_version,omitempty"`
 	ProposalID      string         `json:"proposal_id"`
 	Status          ProposalStatus `json:"status"`
 	Tool            string         `json:"tool"`

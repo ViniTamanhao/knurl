@@ -158,21 +158,25 @@ const (
 
 // ProposalRecord is persisted in ~/.config/knurl/staging/<proposal-id>/proposal.json.
 type ProposalRecord struct {
-	ProposalID     string           `json:"proposal_id"`
-	ToolName       string           `json:"tool_name"`
-	TargetVersion  int              `json:"target_version"`
-	BaseVersion    int              `json:"base_version"`
-	Scope          Scope            `json:"scope"`
-	Summary        string           `json:"summary"`
-	Status         ProposalStatus   `json:"status"`
-	BundleSHA256   string           `json:"bundle_sha256"`
-	Elevated       bool             `json:"elevated"`
-	Validation     ValidationReport `json:"validation"`
-	CapabilityDiff CapabilityDiff   `json:"capability_diff"`
-	DryRun         *DryRunPreview   `json:"dry_run,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	DecidedAt      *time.Time       `json:"decided_at,omitempty"`
-	DecisionNote   string           `json:"decision_note,omitempty"`
+	Kind            string           `json:"kind"`
+	TargetRepoRoot  string           `json:"target_repo_root,omitempty"`
+	PromotedVersion int              `json:"promoted_version,omitempty"`
+	SourceDiff      string           `json:"source_diff,omitempty"`
+	ProposalID      string           `json:"proposal_id"`
+	ToolName        string           `json:"tool_name"`
+	TargetVersion   int              `json:"target_version"`
+	BaseVersion     int              `json:"base_version"`
+	Scope           Scope            `json:"scope"`
+	Summary         string           `json:"summary"`
+	Status          ProposalStatus   `json:"status"`
+	BundleSHA256    string           `json:"bundle_sha256"`
+	Elevated        bool             `json:"elevated"`
+	Validation      ValidationReport `json:"validation"`
+	CapabilityDiff  CapabilityDiff   `json:"capability_diff"`
+	DryRun          *DryRunPreview   `json:"dry_run,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	DecidedAt       *time.Time       `json:"decided_at,omitempty"`
+	DecisionNote    string           `json:"decision_note,omitempty"`
 }
 
 // CapabilityDiff summarizes capability changes between an active version and a proposal.
@@ -192,11 +196,20 @@ type CapabilityChange struct {
 
 // ValidationReport summarizes schema, compilation, and test outcomes during propose.
 type ValidationReport struct {
-	SchemaValid bool     `json:"schema_valid"`
-	Compiled    bool     `json:"compiled"`
-	TestsPassed int      `json:"tests_passed"`
-	TestsTotal  int      `json:"tests_total"`
-	Failures    []string `json:"failures"`
+	Tests       []FixtureResult `json:"tests,omitempty"`
+	SchemaValid bool            `json:"schema_valid"`
+	Compiled    bool            `json:"compiled"`
+	TestsPassed int             `json:"tests_passed"`
+	TestsTotal  int             `json:"tests_total"`
+	Failures    []string        `json:"failures"`
+}
+
+// FixtureResult records a redacted fixture outcome.
+type FixtureResult struct {
+	Name   string         `json:"name"`
+	Passed bool           `json:"passed"`
+	Error  *ToolError     `json:"error,omitempty"`
+	Output map[string]any `json:"output,omitempty"`
 }
 
 // DryRunPreview captures the optional read-only working-directory dry run during propose.
