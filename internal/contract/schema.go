@@ -95,6 +95,18 @@ func ValidateManifestJSON(data []byte) (Manifest, error) {
 			Message: fmt.Sprintf("manifest.json failed semantic validation: %v", semErr),
 		}
 	}
+	for _, entry := range []struct {
+		name   string
+		schema map[string]any
+	}{{"input", manifest.InputSchema}, {"output", manifest.OutputSchema}} {
+		raw, marshalErr := json.Marshal(entry.schema)
+		if marshalErr != nil {
+			return Manifest{}, &ToolError{Code: ErrInvalidManifest, Message: marshalErr.Error()}
+		}
+		if _, compileErr := compileSchemaBytes("knurl://"+entry.name+"/"+manifest.Name, raw); compileErr != nil {
+			return Manifest{}, &ToolError{Code: ErrInvalidManifest, Message: fmt.Sprintf("invalid %s_schema: %v", entry.name, compileErr)}
+		}
+	}
 	return manifest, nil
 }
 

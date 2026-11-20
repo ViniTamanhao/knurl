@@ -189,6 +189,15 @@ func (r *Registry) Promote(m contract.Manifest, files map[string][]byte, base in
 		return err
 	}
 	defer func() { _ = tool.Close() }()
+	// Pin legacy highest-version resolution before exposing another version.
+	// An interrupted repair must preserve the previous active bundle.
+	if current > 0 {
+		if _, statErr := tool.Stat("active.json"); errors.Is(statErr, fs.ErrNotExist) {
+			if err = AtomicJSON(tool, "active.json", contract.ActiveVersionPointer{ActiveVersion: current, UpdatedAt: time.Now().UTC()}); err != nil {
+				return err
+			}
+		}
+	}
 	temp := fmt.Sprintf(".install-%d", time.Now().UnixNano())
 	if err = tool.Mkdir(temp, 0o700); err != nil {
 		return err

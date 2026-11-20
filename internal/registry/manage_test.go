@@ -99,3 +99,34 @@ func TestDiscoverMalformedRepoShadowsGlobal(t *testing.T) {
 		t.Fatalf("malformed local tool exposed global fallback: %+v %v", out, err)
 	}
 }
+
+func TestInterruptedLegacyPromotionPinsOldVersion(t *testing.T) {
+	r := &registry.Registry{GlobalDir: filepath.Join(t.TempDir(), "tools")}
+	promoteSample(t, r, 1, 0, contract.ScopeGlobal)
+	pointer := filepath.Join(r.GlobalDir, "sample-tool", "active.json")
+	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Resolve("sample-tool", contract.ScopeGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := b.Manifest
+	m.Version = 2
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Missing source simulates a failed materialization after legacy pointer pinning.
+	err = r.Promote(m, map[string][]byte{"manifest.json": data}, 1, contract.ApprovalRecord{}, contract.ScopeGlobal)
+	if err == nil {
+		t.Fatal("accepted incomplete version")
+	}
+	b, err = r.Resolve("sample-tool", contract.ScopeGlobal)
+	if err != nil || b.Version != 1 {
+		t.Fatalf("previous active changed: %+v %v", b, err)
+	}
+	if _, err = os.Stat(pointer); err != nil {
+		t.Fatal("legacy pointer not pinned", err)
+	}
+}
