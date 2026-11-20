@@ -1,0 +1,37 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {
+      "name": "clean-project-checks-pass",
+      "input": {"run_checks": true},
+      "mocks": {
+        "fs": {"files": {".pr-ready.json": "{\"schema_version\":1}"}},
+        "git": {
+          "branch": {"current": "feat/readiness", "detached": false, "head": "abc123"},
+          "status": {"clean": true, "staged": [], "unstaged": [], "untracked": []}
+        },
+        "exec": [{"template_id": "project-check", "params": {}, "result": {"exit_code": 0, "stdout": "checks passed"}}]
+      },
+      "expect": {"ok": true, "output": {"ready": true, "branch": "feat/readiness", "clean": true, "checks_run": true, "check_exit_code": 0}}
+    },
+    {
+      "name": "project-checks-fail",
+      "input": {"run_checks": true, "allow_dirty": true},
+      "mocks": {
+        "fs": {"files": {".pr-ready.json": "{\"schema_version\":1}"}},
+        "git": {
+          "branch": {"current": "main", "detached": false, "head": "abc123"},
+          "status": {"clean": false, "staged": [], "unstaged": [], "untracked": ["notes.md"]}
+        },
+        "exec": [{"template_id": "project-check", "params": {}, "result": {"exit_code": 1, "stdout": "", "stderr": "test failure"}}]
+      },
+      "expect": {"ok": true, "output_subset": {"ready": false, "checks_run": true, "check_exit_code": 1}}
+    },
+    {
+      "name": "unsupported-project-config",
+      "input": {},
+      "mocks": {"fs": {"files": {".pr-ready.json": "{\"schema_version\":2}"}}},
+      "expect": {"ok": false, "error_code": "TOOL_ERROR", "error_contains": "unsupported .pr-ready.json"}
+    }
+  ]
+}
