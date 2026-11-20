@@ -18,7 +18,11 @@ Usage:
 
 Commands:
   run <tool-name-or-path>   Execute a tool bundle in an isolated worker subprocess
-  mcp                       Start the stdio MCP server (exposes knurl_run)
+  mcp                       Start the five-tool stdio MCP server
+  approve [id|--last]        Review and explicitly approve a staged proposal
+  reject [id|--last]         Reject a proposal (--reason <text>)
+  rollback <tool>            Restore a version (--to vN, --scope repo|global)
+  proposals                 List proposals (--status pending|all, --json)
   version                   Print knurl version information
   help                      Show this help message
 
@@ -43,6 +47,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	switch args[0] {
 	case "_worker":
 		return runtime.RunWorker(stdin, stdout)
+	case "approve", "reject", "rollback", "proposals":
+		return runLifecycleCmd(args[0], args[1:], stdin, stdout, stderr)
 	case "run":
 		return runToolCmd(args[1:], stdout, stderr)
 	case "mcp":
