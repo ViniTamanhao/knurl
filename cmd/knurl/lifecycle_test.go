@@ -288,3 +288,41 @@ func TestMCPRejectsUnknownBundleFields(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+func TestMCPStdioLifecycleKeepsProtocolClean(t *testing.T) {
+	req := flagshipRequest(t)
+	work := lifecycleWorkspace(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "_mcp-test", work)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	client := mcp.NewClient(&mcp.Implementation{Name: "stdio-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Tools) != 5 {
+		t.Fatalf("tools %+v", tools)
+	}
+	p := callLifecycle[contract.ProposeResponse](t, session, "knurl_propose", req, false)
+	if p.Validation.TestsPassed != 3 {
+		t.Fatalf("proposal %+v", p)
+	}
+	status := callLifecycle[contract.StatusResponse](t, session, "knurl_status", contract.StatusRequest{ProposalID: p.ProposalID}, false)
+	if status.Status != contract.ProposalPending {
+		t.Fatalf("status %+v", status)
+	}
+	if err = session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected MCP diagnostics: %s", stderr.String())
+	}
+}

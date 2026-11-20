@@ -78,7 +78,7 @@ func addLifecycleTools(server *mcp.Server, reg *registry.Registry, sup *runtime.
 		out, err := store.Propose(ctx, contract.ProposeRequest{Name: req.Name, Scope: req.Scope, Summary: req.Summary, BaseVersion: req.BaseVersion, Manifest: manifest, Source: req.Source, Tests: tests})
 		return lifecycleResult(out, err)
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "knurl_status", Description: "Read a proposal state, human decision and promoted version.", Annotations: annotations(true, false, true, false), InputSchema: objectSchema([]string{"proposal_id"}, map[string]any{"proposal_id": stringSchema()})}, func(_ context.Context, _ *mcp.CallToolRequest, req contract.StatusRequest) (*mcp.CallToolResult, map[string]any, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "knurl_status", Description: "Read a proposal state, human decision and promoted version.", Annotations: annotations(true, false, true, false), InputSchema: objectSchema([]string{"proposal_id"}, map[string]any{"proposal_id": map[string]any{"type": "string", "minLength": 1}})}, func(_ context.Context, _ *mcp.CallToolRequest, req contract.StatusRequest) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := store.Status(req.ProposalID)
 		return lifecycleResult(out, err)
 	})

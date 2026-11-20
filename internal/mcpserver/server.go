@@ -23,8 +23,7 @@ type Config struct {
 	Logger     *slog.Logger
 }
 
-// NewServer constructs a stateless MCP server exposing knurl_run wired to the
-// two-tier registry.
+// NewServer constructs the five static meta-tools over the two-tier registry.
 func NewServer(cfg Config) *mcp.Server {
 	logger := cfg.Logger
 	if logger == nil {
