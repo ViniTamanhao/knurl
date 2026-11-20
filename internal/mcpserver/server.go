@@ -66,6 +66,7 @@ func NewServer(cfg Config) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "knurl_run",
+		Annotations:  annotations(false, true, false, true),
 		Description:  "Validate typed JSON input against a tool manifest, execute tool.js in an isolated _worker subprocess, redact secrets, and validate structured JSON output.",
 		InputSchema:  runToolInputSchema(),
 		OutputSchema: runToolOutputSchema(),
@@ -111,6 +112,7 @@ func NewServer(cfg Config) *mcp.Server {
 		return &mcp.CallToolResult{IsError: !res.OK}, res, nil
 	})
 
+	addLifecycleTools(server, reg, supervisor, cfg.WorkDir)
 	return server
 }
 
