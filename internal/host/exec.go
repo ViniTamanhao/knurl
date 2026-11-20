@@ -104,6 +104,9 @@ func (h *Host) Exec(ctx context.Context, templateID string, params map[string]st
 	}
 
 	start := time.Now()
+	if h.mocks != nil {
+		return h.mockExec(templateID, params)
+	}
 	//nolint:gosec // G204: program and argv strictly validated against approved ExecTemplate.
 	cmd := exec.CommandContext(execCtx, tmpl.Program, expandedArgs...)
 	cmd.Dir = h.workDir

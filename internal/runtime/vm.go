@@ -58,6 +58,9 @@ func ExecuteInProcessWithConfig(ctx context.Context, req contract.WorkerRequest,
 		return resp
 	}
 
+	if req.Mocks != nil {
+		cfg.HostOptions = append(cfg.HostOptions, host.WithMocks(req.Mocks))
+	}
 	hostEnv, err := host.NewWithOptions(req.Manifest, req.WorkDir, req.Secrets, redactor, cfg.HostOptions...)
 	if err != nil {
 		return finalize(contract.WorkerResponse{
