@@ -372,7 +372,7 @@ func (s *Store) List(all bool) ([]contract.ProposalRecord, error) {
 		}
 		p, e := s.Read(entry.Name())
 		if e != nil {
-			return out, e
+			continue // Corrupt records remain directly inspectable, never approval candidates.
 		}
 		if all || p.Status == contract.ProposalPending {
 			out = append(out, p)

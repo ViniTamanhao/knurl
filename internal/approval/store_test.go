@@ -259,3 +259,23 @@ func TestUnifiedSourceDiff(t *testing.T) {
 		t.Fatal(diff)
 	}
 }
+
+func TestCorruptProposalDoesNotBlockLast(t *testing.T) {
+	s := setup(t)
+	p := propose(t, s, request())
+	id := "prop_00000000000000000000000000000000"
+	dir := filepath.Join(filepath.Dir(s.Registry.GlobalDir), "staging", id)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "proposal.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	last, err := s.Last()
+	if err != nil || last != p.ProposalID {
+		t.Fatalf("last=%s err=%v", last, err)
+	}
+	if _, err = s.Read(id); err == nil {
+		t.Fatal("direct corrupt read did not fail")
+	}
+}

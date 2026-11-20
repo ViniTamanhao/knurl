@@ -17,7 +17,7 @@ func permissions(m contract.Manifest) map[string]map[string]bool {
 		}
 		out[capability][detail] = true
 	}
-	if !m.ReadOnly {
+	if m.Name != "" && !m.ReadOnly {
 		add("read_only", "false")
 	}
 	if m.Capabilities.FS != nil {
@@ -42,11 +42,14 @@ func permissions(m contract.Manifest) map[string]map[string]bool {
 	}
 	if m.Capabilities.Exec != nil {
 		for _, rule := range m.Capabilities.Exec.Templates {
+			rule.Description = ""
+			rule.ArgsSchema = cloneArgSchemas(rule.ArgsSchema)
 			b, _ := json.Marshal(rule)
 			add("exec.template", string(b))
 		}
 	}
 	for _, ref := range m.Secrets {
+		ref.Description = ""
 		b, _ := json.Marshal(ref)
 		add("secret", string(b))
 	}
@@ -86,7 +89,7 @@ func Diff(before, after contract.Manifest) contract.CapabilityDiff {
 			kind := "unchanged"
 			if !a[c][p] {
 				kind = "added"
-				d.HasEscalation = true
+				d.HasEscalation = d.HasEscalation || !permissionCovered(c, p, before)
 			} else if !b[c][p] {
 				kind = "removed"
 			}
@@ -95,6 +98,17 @@ func Diff(before, after contract.Manifest) contract.CapabilityDiff {
 	}
 	d.HasEscalation = d.HasEscalation || (!d.ElevatedBefore && d.ElevatedAfter)
 	return d
+}
+
+func cloneArgSchemas(in map[string]contract.ExecArgSchema) map[string]contract.ExecArgSchema {
+	out := make(map[string]contract.ExecArgSchema, len(in))
+	for name, spec := range in {
+		spec.Description = ""
+		spec.Enum = slices.Clone(spec.Enum)
+		slices.Sort(spec.Enum)
+		out[name] = spec
+	}
+	return out
 }
 
 // SourceDiff emits a unified hunk with surrounding context without external programs.

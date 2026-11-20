@@ -38,7 +38,11 @@ When proposing `v<N+1>` over an existing active `v<N>`, `knurl` diffs the normal
 - `exec.templates`: newly added templates, changed `program`, changed `args`, widened `args_schema` regex/max_length/enum, added `env`, or `read_only: true -> false`
 - `secrets`: newly added secrets or `required: false -> true`
 
-Narrowing or unchanged capabilities never set `has_escalation: true`.
+Proven narrowing and unchanged capabilities never set `has_escalation: true`.
+Descriptions and enum ordering are metadata, not permissions. Containment checks
+recognize HTTP method/path/domain/secret subsets, stricter argument lengths and
+enum subsets, and optional secret transitions. Arbitrary regex/glob inclusion is
+not inferred: changes whose containment cannot be proved require escalation review.
 
 ## 4. Filesystem Confinement (`os.Root`)
 
@@ -94,8 +98,8 @@ Capability diffs sort capability names and serialized permission details, report
 `added`, `removed`, and `unchanged` entries. HTTP rule details include methods,
 paths, plaintext permission and bound secret names; exec details include complete
 argv templates, argument constraints and environment bindings. Changed rules
-appear as removal plus addition. Every addition is conservatively flagged as
-an escalation; transition into elevated access is also flagged. Human review
+appear as removal plus addition. Additions not covered by previous permissions
+are flagged as escalations; transition into elevated access is also flagged. Human review
 includes a unified source diff. Approval rechecks the exact staged SHA-256 digest
 and the active base under a registry write lock before promotion. Neither approval
 nor rollback is registered as an MCP handler.
