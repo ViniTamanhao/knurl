@@ -113,3 +113,19 @@ staging/
 `proposal.json` stores `proposal_id`, `tool_name`, `target_version`, `base_version`, `scope`, `summary`, `status` (`pending` | `approved` | `rejected` | `superseded`), `bundle_sha256`, `elevated`, `validation`, `capability_diff`, `dry_run` (if run), `created_at`, `decided_at`, and `decision_note`.
 
 When a proposal is approved, any older `pending` proposals for the same `(scope, tool_name)` may be marked `superseded` to keep `knurl approve --last` unambiguous.
+
+## Phase 3 implementation contract
+
+The pointer remains `active.json` (not a symlink or `current` file). Promotion
+writes and syncs a complete version before switching the pointer. Registry
+mutations serialize with an exclusive lock directory; stale locks fail closed.
+Repair requests may include `base_version`; when omitted it is inferred as
+`manifest.version - 1`. Both submission and approval reject stale bases.
+
+The proposal record additionally stores `kind` (`create` or `repair`),
+`target_repo_root` (absolute repo destination for repo proposals), `source_diff`
+(unified tool.js diff), and `promoted_version` after approval. `scope` is the
+canonical target scope field; `decided_at` is the approval/rejection timestamp.
+Validation includes per-case `tests` entries (`name`, `passed`, optional `error`).
+The digest hashes each filename, NUL, byte length, NUL, and exact file bytes in
+manifest.json, tool.js, tests.json order. Invalid submissions are not persisted.
