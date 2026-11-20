@@ -61,6 +61,18 @@ func (r *Registry) Discover(req contract.DiscoverRequest) (contract.DiscoverResp
 		return out, &contract.ToolError{Code: contract.ErrInvalidArgument, Message: "limit must be 1..100"}
 	}
 	for _, e := range entries {
+		// A malformed repo-local bundle must still shadow its global namesake.
+		if scope == contract.ScopeAuto && e.Scope == contract.ScopeGlobal {
+			repo, ok, repoErr := r.RepoToolsDir()
+			if repoErr != nil {
+				return out, repoErr
+			}
+			if ok {
+				if _, statErr := os.Lstat(filepath.Join(repo, e.Name)); statErr == nil {
+					continue
+				}
+			}
+		}
 		hay := strings.ToLower(e.Name + " " + e.Manifest.Description + " " + strings.Join(e.Manifest.Tags, " "))
 		if !strings.Contains(hay, strings.ToLower(req.Query)) {
 			continue

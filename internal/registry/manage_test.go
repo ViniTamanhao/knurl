@@ -86,3 +86,16 @@ func TestPromotionLockAndPointerIntegrity(t *testing.T) {
 		t.Fatal("failed writer changed pointer", err)
 	}
 }
+
+func TestDiscoverMalformedRepoShadowsGlobal(t *testing.T) {
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, ".knurl", "tools", "sample-tool"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := &registry.Registry{WorkDir: work, GlobalDir: filepath.Join(t.TempDir(), "tools")}
+	promoteSample(t, r, 1, 0, contract.ScopeGlobal)
+	out, err := r.Discover(contract.DiscoverRequest{Scope: contract.ScopeAll})
+	if err != nil || len(out.Tools) != 0 {
+		t.Fatalf("malformed local tool exposed global fallback: %+v %v", out, err)
+	}
+}
