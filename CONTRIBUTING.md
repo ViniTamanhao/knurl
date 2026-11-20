@@ -53,6 +53,7 @@ This repository enforces [Conventional Commits 1.0.0](https://www.conventionalco
 ```
 
 Rules:
+- Commit **progressively** in small, logical, buildable slices (e.g., contracts -> core package -> CLI/MCP wiring -> tests -> docs) rather than one monolithic commit.
 - Subject line must be **72 characters or fewer**.
 - Summary must start with a lowercase alphanumeric character (`[a-z0-9]`), use the imperative mood, and **must not** end with a trailing period.
 - Breaking changes use `<type>(<scope>)!:` or a `BREAKING CHANGE:` footer.
