@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,14 +61,18 @@ func (r *Registry) Discover(req contract.DiscoverRequest) (contract.DiscoverResp
 	if limit < 1 || limit > 100 {
 		return out, &contract.ToolError{Code: contract.ErrInvalidArgument, Message: "limit must be 1..100"}
 	}
+	var repo string
+	var hasRepo bool
+	if scope == contract.ScopeAuto {
+		repo, hasRepo, err = r.RepoToolsDir()
+		if err != nil {
+			return out, err
+		}
+	}
 	for _, e := range entries {
 		// A malformed repo-local bundle must still shadow its global namesake.
 		if scope == contract.ScopeAuto && e.Scope == contract.ScopeGlobal {
-			repo, ok, repoErr := r.RepoToolsDir()
-			if repoErr != nil {
-				return out, repoErr
-			}
-			if ok {
+			if hasRepo {
 				if _, statErr := os.Lstat(filepath.Join(repo, e.Name)); statErr == nil {
 					continue
 				}
@@ -114,7 +119,10 @@ func AtomicJSON(root *os.Root, name string, value any) error {
 	if err != nil {
 		return err
 	}
-	temp := fmt.Sprintf(".metadata-%d", time.Now().UnixNano())
+	temp, err := temporaryName(".metadata-")
+	if err != nil {
+		return err
+	}
 	f, err := root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -198,7 +206,10 @@ func (r *Registry) Promote(m contract.Manifest, files map[string][]byte, base in
 			}
 		}
 	}
-	temp := fmt.Sprintf(".install-%d", time.Now().UnixNano())
+	temp, err := temporaryName(".install-")
+	if err != nil {
+		return err
+	}
 	if err = tool.Mkdir(temp, 0o700); err != nil {
 		return err
 	}
@@ -278,7 +289,7 @@ func (r *Registry) Rollback(name string, to int, scope contract.Scope) (int, int
 	if to == 0 {
 		data, e := tool.ReadFile("active.json")
 		if e != nil {
-			return 0, 0, e
+			return 0, 0, &contract.ToolError{Code: contract.ErrVersionNotFound, Message: fmt.Sprintf("cannot resolve previous version: %v", e)}
 		}
 		var p contract.ActiveVersionPointer
 		if e = json.Unmarshal(data, &p); e != nil {
@@ -286,7 +297,10 @@ func (r *Registry) Rollback(name string, to int, scope contract.Scope) (int, int
 		}
 		to = p.PreviousVersion
 	}
-	if to < 1 || to == b.Version {
+	if to == b.Version {
+		return 0, 0, &contract.ToolError{Code: contract.ErrVersionNotFound, Message: fmt.Sprintf("tool is already on v%d", to)}
+	}
+	if to < 1 {
 		return 0, 0, &contract.ToolError{Code: contract.ErrVersionNotFound, Message: "no previous version"}
 	}
 	target, err := r.LoadVersion(name, to, b.Scope)
@@ -298,4 +312,12 @@ func (r *Registry) Rollback(name string, to int, scope contract.Scope) (int, int
 	}
 	err = AtomicJSON(tool, "active.json", contract.ActiveVersionPointer{ActiveVersion: to, PreviousVersion: b.Version, UpdatedAt: time.Now().UTC()})
 	return b.Version, to, err
+}
+
+func temporaryName(prefix string) (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s%x", prefix, bytes), nil
 }

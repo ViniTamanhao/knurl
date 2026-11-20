@@ -2,8 +2,10 @@ package registry_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,5 +130,23 @@ func TestInterruptedLegacyPromotionPinsOldVersion(t *testing.T) {
 	}
 	if _, err = os.Stat(pointer); err != nil {
 		t.Fatal("legacy pointer not pinned", err)
+	}
+}
+
+func TestRollbackStructuredEdgeErrors(t *testing.T) {
+	r := &registry.Registry{GlobalDir: filepath.Join(t.TempDir(), "tools")}
+	promoteSample(t, r, 1, 0, contract.ScopeGlobal)
+	if err := os.Remove(filepath.Join(r.GlobalDir, "sample-tool", "active.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, to := range []int{0, 1} {
+		_, _, err := r.Rollback("sample-tool", to, contract.ScopeGlobal)
+		var te *contract.ToolError
+		if !errors.As(err, &te) || te.Code != contract.ErrVersionNotFound {
+			t.Fatalf("to %d: %v", to, err)
+		}
+		if to == 1 && !strings.Contains(te.Message, "already on v1") {
+			t.Fatal(te.Message)
+		}
 	}
 }

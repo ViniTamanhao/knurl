@@ -166,3 +166,8 @@ ones. Version allocation uses the highest installed version plus one, even after
 rollback; use explicit `base_version` when the active version differs from the
 highest installed version. `previous_version` permits repeated backward/forward
 rollback. Rollback validates the target bundle and requires its approval record.
+
+Proposal listing and `approve --last` skip unreadable or malformed staging records;
+those records remain on disk and direct ID inspection still reports the error.
+Atomic metadata and installation temporary names use 128 random bits plus exclusive
+creation, avoiding dependence on clock resolution.
