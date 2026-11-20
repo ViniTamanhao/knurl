@@ -61,7 +61,11 @@ func (h *Host) mockHTTP(method, url string, headers map[string]string) (HTTPResp
 		if len(r.Body) > MaxHTTPBodyBytes {
 			return HTTPResponse{}, &contract.ToolError{Code: contract.ErrLimitExceeded, Message: "mock HTTP body exceeds cap"}
 		}
-		return HTTPResponse{Status: r.Status, Headers: r.Headers, Body: h.redactor.String(r.Body)}, nil
+		clean := make(map[string]string, len(r.Headers))
+		for k, v := range r.Headers {
+			clean[h.redactor.String(k)] = h.redactor.String(v)
+		}
+		return HTTPResponse{Status: r.Status, Headers: clean, Body: h.redactor.String(r.Body)}, nil
 	}
 	return HTTPResponse{}, mockMissing("HTTP " + method + " " + url)
 }

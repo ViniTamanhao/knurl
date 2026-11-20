@@ -362,7 +362,15 @@ func (h *Host) GitLog(ctx context.Context, opts GitLogOptions) ([]contract.GitCo
 	}
 
 	if h.mocks != nil {
-		return h.mocks.Git.Log[:min(limit, len(h.mocks.Git.Log))], nil
+		if h.mocks.Git.Log == nil {
+			return nil, mockMissing("git.log")
+		}
+		commits := append([]contract.GitCommit{}, h.mocks.Git.Log[:min(limit, len(h.mocks.Git.Log))]...)
+		for i := range commits {
+			commits[i].Author = h.redactor.String(commits[i].Author)
+			commits[i].Subject = h.redactor.String(commits[i].Subject)
+		}
+		return commits, nil
 	}
 	if opts.Ref == "" {
 		_, headCode, headErr := h.runGitRaw(ctx, "rev-parse", "--verify", "--quiet", "HEAD")
@@ -456,7 +464,9 @@ func (h *Host) GitDiff(ctx context.Context, opts GitDiffOptions) (contract.GitDi
 		if h.mocks.Git.Diff == nil {
 			return contract.GitDiff{}, mockMissing("git.diff")
 		}
-		return *h.mocks.Git.Diff, nil
+		diff := *h.mocks.Git.Diff
+		diff.Patch = h.redactor.String(diff.Patch)
+		return diff, nil
 	}
 	targetArgs := make([]string, 0, 4)
 	if opts.Staged {
