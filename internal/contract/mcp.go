@@ -69,6 +69,7 @@ type ProposeRequest struct {
 
 // ProposeResponse is the output payload for the knurl_propose MCP meta-tool.
 type ProposeResponse struct {
+	SourceDiff      string           `json:"source_diff,omitempty"`
 	ProposalID      string           `json:"proposal_id"`
 	Status          ProposalStatus   `json:"status"`
 	Tool            string           `json:"tool"`

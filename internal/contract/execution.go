@@ -206,9 +206,10 @@ type ValidationReport struct {
 
 // FixtureResult records a redacted fixture outcome.
 type FixtureResult struct {
-	Name   string     `json:"name"`
-	Passed bool       `json:"passed"`
-	Error  *ToolError `json:"error,omitempty"`
+	Name   string         `json:"name"`
+	Passed bool           `json:"passed"`
+	Error  *ToolError     `json:"error,omitempty"`
+	Output map[string]any `json:"output,omitempty"`
 }
 
 // DryRunPreview captures the optional read-only working-directory dry run during propose.
